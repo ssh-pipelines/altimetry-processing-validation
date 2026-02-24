@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+
+[project]
+name = "altimetry-processing-validation"
+version = "0.1.0"
+description = "Comparison toolkit for altimetry NetCDF product files"
+requires-python = ">=3.10"
+dependencies = [
+    "xarray>=2023.1.0",
+    "numpy>=1.24.0",
+    "netCDF4>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+validate-altimetry = "validation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
