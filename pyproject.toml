@@ -10,6 +10,7 @@ dependencies = [
     "xarray>=2023.1.0",
     "numpy>=1.24.0",
     "netCDF4>=1.6.0",
+    "matplotlib>=3.10"
 ]
 
 [project.optional-dependencies]
@@ -18,6 +19,7 @@ dev = ["pytest>=7.0"]
 [project.scripts]
 validate-altimetry = "validation.cli:main"
 bulk-validate-altimetry = "validation.cli:bulk_main"
+compare-indicators = "validation.cli:indicators_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

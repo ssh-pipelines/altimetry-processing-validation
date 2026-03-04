@@ -50,11 +50,11 @@ def format_bulk_report(
 
     # Per-file table
     if report.matched_pairs:
-        fname_width = max(len(r.filename) for r in report.matched_pairs)
-        fname_width = max(fname_width, len("File"))
+        date_width = max(len(r.date_key) for r in report.matched_pairs)
+        date_width = max(date_width, len("Date"))
 
         header = (
-            f"{'File':<{fname_width}}  "
+            f"{'Date':<{date_width}}  "
             f"{'SSHA Agr%':>9}  "
             f"{'MaxAbs':>7}  "
             f"{'MAE':>7}  "
@@ -79,7 +79,7 @@ def format_bulk_report(
                 f"{r.counts_mean_abs_diff:.2f}" if r.counts_mean_abs_diff is not None else "N/A"
             )
             row = (
-                f"{r.filename:<{fname_width}}  "
+                f"{r.date_key:<{date_width}}  "
                 f"{agr:>9}  "
                 f"{max_abs:>7}  "
                 f"{mae:>7}  "

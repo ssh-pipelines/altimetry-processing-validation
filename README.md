@@ -63,6 +63,9 @@ bulk-validate-altimetry dir_a/ dir_b/ --threshold 0.10 --pass-threshold 90.0
 
 # Ignore timestamp attributes
 bulk-validate-altimetry dir_a/ dir_b/ --ignore-attrs date_created history
+
+# Save a timeseries plot of difference metrics
+bulk-validate-altimetry dir_a/ dir_b/ --plot report.png
 ```
 
 Files are matched by filename. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored.
@@ -74,6 +77,7 @@ Files are matched by filename. Unmatched files are listed but not compared. Exit
 | `--threshold` | `0.05` | Absolute difference threshold in metres for the SSHA agreement metric |
 | `--pass-threshold` | `95.0` | Minimum SSHA agreement % for a file to be marked PASS |
 | `--ignore-attrs` | none | Attribute names to exclude from comparison |
+| `--plot` | none | Save a timeseries plot to the given path (e.g. `report.png`) |
 
 #### Bulk report contents
 
@@ -82,6 +86,15 @@ Files are matched by filename. Unmatched files are listed but not compared. Exit
 - **Per-file table** — SSHA agreement %, max abs diff, MAE, RMSD, counts MAE, and PASS/FAIL/ERROR/N/A status for each matched pair
 - **Aggregate statistics** — mean, median, min, max across all valid pairs for each metric
 - **Summary line** — count and percentage of files passing the SSHA agreement threshold
+
+#### Timeseries plot (`--plot`)
+
+A three-panel figure with a shared date x-axis:
+1. **SSHA agreement %** — with a dashed reference line at `--pass-threshold`
+2. **SSHA diff metrics** — MAE, RMSD, and max absolute difference
+3. **Counts MAE**
+
+Error pairs (files that could not be read) are marked with vertical red lines on all panels. Supports any format accepted by matplotlib (`.png`, `.pdf`, `.svg`, etc.).
 
 ## Report Contents
 
@@ -142,6 +155,7 @@ src/validation/
   report.py               # Plain-text report formatting (single-file)
   bulk_compare.py         # Bulk directory comparison logic and dataclasses
   bulk_report.py          # Plain-text report formatting (bulk)
+  bulk_plot.py            # Timeseries plot of difference metrics
   comparators/
     base.py               # BaseComparator ABC + result dataclasses
     along_track.py        # AlongTrackComparator
