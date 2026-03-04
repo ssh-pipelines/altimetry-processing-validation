@@ -1,6 +1,6 @@
 # altimetry-processing-validation
 
-Comparison toolkit for altimetry NetCDF product files. Takes two files of the same product type and produces a structured report of their differences, including per-variable statistics, bias, spatial correlation, and product-specific quality metrics.
+Comparison toolkit for altimetry NetCDF product files. Supports single-file pair comparison and bulk directory comparison for simple-grid products. Produces structured reports of differences including per-variable statistics, bias, spatial correlation, and product-specific quality metrics.
 
 ## Supported Product Types
 
@@ -25,6 +25,8 @@ python -m validation.cli file_a.nc file_b.nc -t along_track
 
 ## Usage
 
+### Single-file comparison
+
 ```bash
 # Compare two along-track files
 validate-altimetry file_a.nc file_b.nc -t along_track
@@ -41,13 +43,45 @@ validate-altimetry file_a.nc file_b.nc -t simple_grid --threshold 0.10
 
 Exit code 0 means files match; exit code 1 means differences were found.
 
-### Options
+#### Options
 
 | Flag | Default | Description |
 |---|---|---|
 | `-t`, `--product-type` | *(required)* | `along_track` or `simple_grid` |
 | `--ignore-attrs` | none | Global or variable attribute names to exclude from comparison |
 | `--threshold` | `0.05` | Absolute difference threshold in metres for the `pct_within_threshold` metric (simple_grid only) |
+
+### Bulk directory comparison
+
+Compare all matching simple-grid NetCDF files across two directories and produce an aggregate report:
+
+```bash
+bulk-validate-altimetry dir_a/ dir_b/
+
+# Custom thresholds
+bulk-validate-altimetry dir_a/ dir_b/ --threshold 0.10 --pass-threshold 90.0
+
+# Ignore timestamp attributes
+bulk-validate-altimetry dir_a/ dir_b/ --ignore-attrs date_created history
+```
+
+Files are matched by filename. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored.
+
+#### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--threshold` | `0.05` | Absolute difference threshold in metres for the SSHA agreement metric |
+| `--pass-threshold` | `95.0` | Minimum SSHA agreement % for a file to be marked PASS |
+| `--ignore-attrs` | none | Attribute names to exclude from comparison |
+
+#### Bulk report contents
+
+- **Header** — directories, threshold, matched/unmatched counts
+- **Unmatched files** — files present in only one directory
+- **Per-file table** — SSHA agreement %, max abs diff, MAE, RMSD, counts MAE, and PASS/FAIL/ERROR/N/A status for each matched pair
+- **Aggregate statistics** — mean, median, min, max across all valid pairs for each metric
+- **Summary line** — count and percentage of files passing the SSHA agreement threshold
 
 ## Report Contents
 
@@ -104,8 +138,10 @@ pytest tests/ -v
 
 ```
 src/validation/
-  cli.py                  # CLI entry point and argument parsing
-  report.py               # Plain-text report formatting
+  cli.py                  # CLI entry points (validate-altimetry, bulk-validate-altimetry)
+  report.py               # Plain-text report formatting (single-file)
+  bulk_compare.py         # Bulk directory comparison logic and dataclasses
+  bulk_report.py          # Plain-text report formatting (bulk)
   comparators/
     base.py               # BaseComparator ABC + result dataclasses
     along_track.py        # AlongTrackComparator

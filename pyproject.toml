@@ -17,6 +17,7 @@ dev = ["pytest>=7.0"]
 
 [project.scripts]
 validate-altimetry = "validation.cli:main"
+bulk-validate-altimetry = "validation.cli:bulk_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

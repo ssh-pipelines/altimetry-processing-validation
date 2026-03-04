@@ -3,6 +3,8 @@
 import argparse
 import sys
 
+from validation.bulk_compare import run_bulk_comparison
+from validation.bulk_report import format_bulk_report
 from validation.comparators.along_track import AlongTrackComparator
 from validation.comparators.simple_grid import SimpleGridComparator
 from validation.report import format_report
@@ -54,6 +56,51 @@ def main(argv: list[str] | None = None) -> int:
     print(format_report(report))
 
     return 1 if report.has_differences else 0
+
+
+def build_bulk_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="bulk-validate-altimetry",
+        description="Compare two directories of simple-grid NetCDF files.",
+    )
+    parser.add_argument("dir_a", help="Path to first directory")
+    parser.add_argument("dir_b", help="Path to second directory")
+    parser.add_argument(
+        "--ignore-attrs",
+        nargs="*",
+        default=None,
+        help="Attribute names to ignore (e.g. date_created history)",
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=0.05,
+        metavar="METERS",
+        help="Absolute difference threshold in metres for pct_within_threshold (default: 0.05)",
+    )
+    parser.add_argument(
+        "--pass-threshold",
+        type=float,
+        default=95.0,
+        metavar="PCT",
+        help="Min SSHA agreement %% for PASS status (default: 95.0)",
+    )
+    return parser
+
+
+def bulk_main(argv: list[str] | None = None) -> int:
+    args = build_bulk_parser().parse_args(argv)
+    report = run_bulk_comparison(args.dir_a, args.dir_b, args.threshold, args.ignore_attrs)
+    print(format_bulk_report(report, pass_threshold=args.pass_threshold))
+    any_fail = any(
+        r.error
+        or (
+            r.ssha_pct_within_threshold is not None
+            and r.ssha_pct_within_threshold < args.pass_threshold
+        )
+        for r in report.matched_pairs
+    )
+    return 1 if any_fail else 0
 
 
 if __name__ == "__main__":
