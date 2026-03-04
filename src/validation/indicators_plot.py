@@ -9,10 +9,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 
-log = logging.getLogger(__name__)
+from validation.comparators.indicators import align_time_indices
 
-# Variables that carry physical units stored in a ``units`` attribute.
-_UNITS_VARS = {"raw_gmsl", "gmsl", "smoothed_gmsl"}
+log = logging.getLogger(__name__)
 
 
 def plot_indicators_comparison(
@@ -59,10 +58,7 @@ def plot_indicators_comparison(
 
     time_a = ds_a["time"].values.astype(float)
     time_b = ds_b["time"].values.astype(float)
-    time_match = (
-        len(time_a) == len(time_b)
-        and bool(np.allclose(time_a, time_b, atol=1e-9))
-    )
+    idx_a, idx_b, common_times = align_time_indices(time_a, time_b)
 
     n = len(vars_to_plot)
     fig, axes = plt.subplots(n, 2, figsize=(14, 3 * n), sharex="col")
@@ -103,18 +99,24 @@ def plot_indicators_comparison(
         if i == 0:
             ax_val.legend(fontsize=8, loc="upper left")
 
-        # --- right panel: B − A ---
+        # --- right panel: B − A at common time points ---
         ax_diff.set_title(f"{var}: {label_b} − {label_a}", fontsize=9)
         ax_diff.set_ylabel(ylabel, fontsize=8)
         ax_diff.grid(True, linewidth=0.4, alpha=0.5)
 
-        if time_match and vals_a.shape == vals_b.shape:
-            diff = vals_b - vals_a
-            ax_diff.plot(time_a, diff, linewidth=0.8, color="purple")
+        if len(common_times) > 0:
+            diff = vals_b[idx_b] - vals_a[idx_a]
+            ax_diff.plot(common_times, diff, linewidth=0.8, color="purple")
             ax_diff.axhline(0.0, color="black", linewidth=0.5, linestyle="--")
+            if len(common_times) < len(time_a) or len(common_times) < len(time_b):
+                ax_diff.annotate(
+                    f"{len(common_times)} common pts",
+                    xy=(0.02, 0.97), xycoords="axes fraction",
+                    fontsize=7, color="gray", va="top",
+                )
         else:
             ax_diff.text(
-                0.5, 0.5, "Time axes differ — diff not shown",
+                0.5, 0.5, "No common time points",
                 transform=ax_diff.transAxes,
                 ha="center", va="center", fontsize=8, color="gray",
             )
