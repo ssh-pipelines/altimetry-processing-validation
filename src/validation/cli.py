@@ -174,5 +174,87 @@ def indicators_main(argv: list[str] | None = None) -> int:
     return 1 if report.has_differences else 0
 
 
+def build_xover_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="compare-xovers",
+        description=(
+            "Compare daily SSH crossover RMS across pre-OER and post-OER periods, "
+            "each with a set1 and set2 directory of xovers_S6-*.nc files."
+        ),
+    )
+    parser.add_argument("pre_dir1",  help="pre-OER  set1 directory")
+    parser.add_argument("pre_dir2",  help="pre-OER  set2 directory")
+    parser.add_argument("post_dir1", help="post-OER set1 directory")
+    parser.add_argument("post_dir2", help="post-OER set2 directory")
+    parser.add_argument("--label-pre1",  default=None, metavar="LABEL")
+    parser.add_argument("--label-pre2",  default=None, metavar="LABEL")
+    parser.add_argument("--label-post1", default=None, metavar="LABEL")
+    parser.add_argument("--label-post2", default=None, metavar="LABEL")
+    parser.add_argument(
+        "--plot",
+        metavar="OUTPUT_FILE",
+        default=None,
+        help="Save the four-way RMS comparison plot to this path (e.g. xover_rms.png)",
+    )
+    parser.add_argument(
+        "--csv-dir",
+        metavar="DIR",
+        default=None,
+        help="Write per-series CSV files to this directory",
+    )
+    return parser
+
+
+def xover_main(argv: list[str] | None = None) -> int:
+    from pathlib import Path
+
+    from validation.crossover import (
+        compute_daily_rms,
+        plot_crossover_four_way,
+        print_summary,
+        write_csv,
+    )
+
+    args = build_xover_parser().parse_args(argv)
+
+    label_pre1  = args.label_pre1  or f"pre_oer / {Path(args.pre_dir1).name}"
+    label_pre2  = args.label_pre2  or f"pre_oer / {Path(args.pre_dir2).name}"
+    label_post1 = args.label_post1 or f"post_oer / {Path(args.post_dir1).name}"
+    label_post2 = args.label_post2 or f"post_oer / {Path(args.post_dir2).name}"
+
+    pre_r1  = compute_daily_rms(args.pre_dir1,  label=label_pre1)
+    pre_r2  = compute_daily_rms(args.pre_dir2,  label=label_pre2)
+    post_r1 = compute_daily_rms(args.post_dir1, label=label_post1)
+    post_r2 = compute_daily_rms(args.post_dir2, label=label_post2)
+
+    for results, lbl in [
+        (pre_r1,  label_pre1),
+        (pre_r2,  label_pre2),
+        (post_r1, label_post1),
+        (post_r2, label_post2),
+    ]:
+        print_summary(results, lbl)
+
+    if args.csv_dir is not None:
+        csv_dir = Path(args.csv_dir)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        for results, lbl in [
+            (pre_r1,  label_pre1),
+            (pre_r2,  label_pre2),
+            (post_r1, label_post1),
+            (post_r2, label_post2),
+        ]:
+            write_csv(results, lbl, csv_dir)
+
+    if args.plot is not None:
+        plot_crossover_four_way(
+            pre_r1, pre_r2, post_r1, post_r2,
+            label_pre1, label_pre2, label_post1, label_post2,
+            output_path=args.plot,
+        )
+
+    return 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

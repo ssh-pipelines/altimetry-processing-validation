@@ -20,6 +20,7 @@ dev = ["pytest>=7.0"]
 validate-altimetry = "validation.cli:main"
 bulk-validate-altimetry = "validation.cli:bulk_main"
 compare-indicators = "validation.cli:indicators_main"
+compare-xovers = "validation.cli:xover_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
