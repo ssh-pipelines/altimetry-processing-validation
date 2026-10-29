@@ -45,7 +45,7 @@ validate-altimetry file_a.nc file_b.nc -t simple_grid --ignore-attrs date_create
 validate-altimetry file_a.nc file_b.nc -t simple_grid --threshold 0.10
 ```
 
-Exit code 0 means files match; exit code 1 means differences were found.
+Exit code 0 means files match; exit code 1 means differences were found. For `along_track_hilat`, exit code 0 means the alignment check passed; 1 means FAIL or N/A (see [Alignment check](#alignment-check-along_track_hilat)).
 
 #### Options
 
@@ -54,6 +54,7 @@ Exit code 0 means files match; exit code 1 means differences were found.
 | `-t`, `--product-type` | *(required)* | `along_track`, `along_track_hilat`, or `simple_grid` |
 | `--ignore-attrs` | none | Global or variable attribute names to exclude from comparison |
 | `--threshold` | `0.05` | Absolute difference threshold in metres for the `pct_within_threshold` metric (simple_grid and along_track_hilat) |
+| `--outlier-cutoff` and other alignment-check flags | see below | along_track_hilat only; see [Alignment check](#alignment-check-along_track_hilat) |
 
 ### Bulk directory comparison
 
@@ -75,7 +76,7 @@ bulk-validate-altimetry dir_a/ dir_b/ --plot report.png
 bulk-validate-altimetry ref_at/ hilat_at/ -t along_track_hilat
 ```
 
-Files are matched by the 8-digit date before `.nc`, so differing filename patterns (e.g. `NASA-SSH_alt_ref_at_v1_1_20201023.nc` and `NASA-SSH_S3B_alt_hilat_at_v1_1_20201023.nc`) pair up. If a directory holds more than one file for a date, the first one in sorted order is used and the rest are listed as unmatched. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored.
+Files are matched by the 8-digit date before `.nc`, so differing filename patterns (e.g. `NASA-SSH_alt_ref_at_v1_1_20201023.nc` and `NASA-SSH_S3B_alt_hilat_at_v1_1_20201023.nc`) pair up. If a directory holds more than one file for a date, the first one in sorted order is used and the rest are listed as unmatched. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored. For `along_track_hilat`, PASS/FAIL comes from the alignment check, `--pass-threshold` is ignored, and N/A days (too few common cells) don't fail the run.
 
 #### Options
 
@@ -83,9 +84,28 @@ Files are matched by the 8-digit date before `.nc`, so differing filename patter
 |---|---|---|
 | `-t`, `--product-type` | `simple_grid` | `simple_grid` or `along_track_hilat` |
 | `--threshold` | `0.05` | Absolute difference threshold in metres for the SSHA agreement metric |
-| `--pass-threshold` | `95.0` | Minimum SSHA agreement % for a file to be marked PASS |
+| `--pass-threshold` | `95.0` | Minimum SSHA agreement % for a file to be marked PASS (not used by along_track_hilat) |
 | `--ignore-attrs` | none | Attribute names to exclude from comparison |
 | `--plot` | none | Save a timeseries plot to the given path (e.g. `report.png`) |
+
+#### Alignment check (along_track_hilat)
+
+Each file pair gets PASS, FAIL, or N/A. Agreement % against a fixed threshold isn't meaningful here, because gridding two different orbits produces several cm of RMSD even for perfect data. So the check judges:
+
+- **Bias** — FAIL if |bias (B − A)| exceeds `--max-bias`.
+- **RMSD against the noise floor** — each file's ascending passes vs its own descending passes give a self-baseline: the disagreement expected from gridding alone. A baseline cell holds only one pass direction (about half the points), so it is compared with a *matched* RMSD: A vs B on the same ascending/descending half-grids. FAIL if matched RMSD exceeds `--rmsd-factor` × baseline. For data that agree, matched/baseline is ≈ 1.
+- **Outlier cells** — FAIL if more than `--max-outlier-cells` common cells have |B − A| above `--outlier-cutoff`. The failure reason gives the size and location of the largest one.
+- **N/A** if fewer than `--min-common-cells` usable common cells (e.g. a data gap in either file).
+
+| Flag | Default | Description |
+|---|---|---|
+| `--outlier-cutoff` | `1.0` | Cells with \|B − A\| above this (m) are outliers, excluded from bias, RMSD, std, baselines, and latitude bands |
+| `--max-bias` | `0.02` | Maximum \|bias\| in metres |
+| `--rmsd-factor` | `1.2` | Maximum matched RMSD as a multiple of the baseline RMSD |
+| `--min-common-cells` | `50` | Minimum usable common cells for a verdict |
+| `--max-outlier-cells` | `0` | Maximum outlier cells before FAIL |
+
+These flags work in both `validate-altimetry` and `bulk-validate-altimetry`.
 
 #### Bulk report contents
 
@@ -97,9 +117,11 @@ Files are matched by the 8-digit date before `.nc`, so differing filename patter
 
 For `along_track_hilat` the report is organised around alignment questions instead:
 
-- **Per-file table** — bias, RMSD, r, std ratio B/A, self-baseline RMSD for A and B, noise RMS for A and B, grid cells in A / B / both, max abs diff and the lat/lon of that cell, and status
-- **Aggregate statistics** — mean/median/min/max of each per-day metric, plus a list of days with no common cells showing which file was empty
-- **Latitude bands** — bias, RMSD, std A/B and their ratio, and noise A/B per 10° band, pooled over every day. Bands beyond the reference coverage show only high-lat noise
+- **Header** — also lists the alignment-check criteria in use
+- **Per-file table** — bias, RMSD, matched RMSD / baseline, r, std ratio B/A, self-baseline RMSD for A and B, noise RMS for A and B, grid cells in A / B / both, outlier cells, max abs diff and the lat/lon of that cell, and alignment status
+- **Aggregate statistics** — mean/median/min/max of each per-day metric, including RMSD with and without outliers, median abs diff, and MAD-based std. Followed by the days failing the alignment check with their reasons, and the days with no common cells showing which file was empty
+- **Latitude bands** — common and outlier cell counts, bias, RMSD, std A/B and their ratio, and noise A/B per 10° band, pooled over every day and excluding outlier cells. Bands beyond the reference coverage show only high-lat noise
+- **Summary line** — days passing out of those judged, with FAIL / N/A / ERROR counts
 
 #### Timeseries plot (`--plot`)
 
@@ -110,7 +132,7 @@ A three-panel figure with a shared date x-axis:
 
 Error pairs (files that could not be read) are marked with vertical red lines on all panels. Supports any format accepted by matplotlib (`.png`, `.pdf`, `.svg`, etc.).
 
-For `along_track_hilat` the figure has two columns. Left, timeseries: bias; RMSD alongside both self-baselines; r and std ratio B/A; noise RMS for A and B; grid cells in A, B, and both. Days with an error or no common cells get red lines. Right, pooled by latitude band: bias and RMSD; std ratio B/A; noise RMS for A and B.
+For `along_track_hilat` the figure has two columns. Left, timeseries: bias with the ±`--max-bias` limits; RMSD (full grids and matched half-grids) alongside both self-baselines and the `--rmsd-factor` limit; r and std ratio B/A; noise RMS for A and B; grid cells in A, B, and both. Days with an error or no common cells get red lines; days failing the alignment check get dotted purple lines. Right, pooled by latitude band: bias and RMSD; std ratio B/A; noise RMS for A and B.
 
 ## Report Contents
 
@@ -139,11 +161,14 @@ The report has four sections:
 *along_track_hilat:*
 - The along_track flag distributions and SSHA percentiles above
 - `latitude_range` — min/max latitude per file
-- `ssha_gridded` — SSHA points with `nasa_flag == 0` are averaged into 1° lat/lon cells for each file. Cells observed by both files are compared: max abs diff (and its cell location), MAE, RMSD, bias (B − A), Pearson r, % of cells within `--threshold`, and the std of each file's gridded SSHA with their ratio B/A
+- `ssha_gridded` — SSHA points with `nasa_flag == 0` are averaged into 1° lat/lon cells for each file, and the cells observed by both files are compared:
+  - over all common cells: max abs diff and its location, RMSD including outliers, median abs diff, MAD-based std of the diff (1.4826 × MAD), and % of cells within `--threshold`
+  - excluding outlier cells (|B − A| > `--outlier-cutoff`): MAE, RMSD, bias (B − A), Pearson r, and the std of each file's gridded SSHA with their ratio B/A
 - `noise` — RMS of `ssha − ssha_smoothed` at flag-good points for each file: small-scale noise, using every point rather than only the overlap
 - `self_baseline` — each file's ascending passes vs its own descending passes, on the same grid. This approximates the RMSD that comes purely from gridding different tracks at different times. A vs B RMSD close to these values means the high-lat data adds little disagreement of its own
-- `lat_bands` — per-10°-band bias, RMSD, std A/B, ratio, and noise A/B
-- Per-variable point-by-point diffs are skipped, because the two files' time indices refer to different orbits. Dimension sizes always differ, so the exit code is always 1; judge agreement from `ssha_gridded`
+- `lat_bands` — per-10°-band common and outlier cell counts, bias, RMSD, std A/B, ratio, and noise A/B
+- `alignment` — PASS/FAIL/N/A with reasons, matched RMSD, baseline RMSD, and the limit used
+- Per-variable point-by-point diffs are skipped, because the two files' time indices refer to different orbits. The result line reads `ALIGNMENT PASS/FAIL/N/A` instead of FILES MATCH / DIFFERENCES FOUND
 
 *simple_grid:*
 - `counts` distribution (min, max, mean, zero-count) per file
@@ -158,7 +183,7 @@ The report has four sections:
 | New product vs NASA-SSH, post-offset | Small | High | 0.05 m |
 | New product vs NASA-SSH, pre-offset | Known offset | High | 0.10 m or wider |
 
-For `along_track_hilat`, compare A vs B RMSD with the self-baselines rather than with a fixed threshold. A std ratio B/A near 1 means similar variability; a noise B well above noise A means the high-lat data is noisier at small scales.
+For `along_track_hilat`, judge RMSD by matched RMSD / baseline (≈ 1 when the high-lat data adds no disagreement of its own) rather than by a fixed threshold. A std ratio B/A near 1 means similar variability; a noise B well above noise A means the high-lat data is noisier at small scales.
 
 A high `r` with a nonzero bias typically means the spatial patterns agree but a systematic offset exists — expected when comparing products before a global offset has been applied.
 

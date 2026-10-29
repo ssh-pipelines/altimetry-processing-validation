@@ -129,7 +129,8 @@ def plot_bulk_hilat(
 
     Left column, timeseries sharing a date axis:
       1. Bias (B - A) over common grid cells
-      2. RMSD (A vs B) against each file's ascending-vs-descending baseline
+      2. RMSD (A vs B, full grids and matched half-grids) against each file's
+         ascending-vs-descending baseline
       3. Pearson r and std ratio B/A
       4. Small-scale noise RMS (ssha - ssha_smoothed) for each file
       5. Grid cells observed by A, by B, and by both
@@ -177,6 +178,7 @@ def plot_bulk_hilat(
 
     ax = ts_axes[1]
     ax.plot(dates, _vals("ssha_rmsd"), color="steelblue", label="RMSD A vs B", **style)
+    ax.plot(dates, _vals("matched_rmsd"), color="purple", label="A vs B half-grids", **style)
     ax.plot(dates, _vals("self_rmsd_a"), color="gray", label="A asc vs desc", **style)
     ax.plot(dates, _vals("self_rmsd_b"), color="darkorange", label="B asc vs desc", **style)
     if report.criteria:

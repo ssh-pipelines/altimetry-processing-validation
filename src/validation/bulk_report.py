@@ -161,14 +161,14 @@ def format_bulk_hilat_report(
     if c:
         lines.insert(
             -1,
-            f"  Alignment check: |bias| <= {c['max_bias']} m, RMSD <= {c['rmsd_factor']}x "
+            f"  Alignment check: |bias| <= {c['max_bias']} m, matched RMSD <= {c['rmsd_factor']}x "
             f"baseline, outlier cells <= {c['max_outlier_cells']} "
             f"(|B - A| > {c['outlier_cutoff']} m), >= {c['min_common_cells']} common cells",
         )
 
     if report.matched_pairs:
         header = (
-            f"{'Date':<8}  {'Bias':>8}  {'RMSD':>7}  {'RMSD/Base':>9}  {'r':>6}  "
+            f"{'Date':<8}  {'Bias':>8}  {'RMSD':>7}  {'Match/Base':>10}  {'r':>6}  "
             f"{'B/A std':>7}  {'Self A':>7}  {'Self B':>7}  {'Noise A':>7}  {'Noise B':>7}  "
             f"{'Cells A':>7}  {'Cells B':>7}  {'Common':>6}  {'Outl':>4}  {'MaxAbs':>7}  "
             f"{'@lat,lon':>13}  {'Status':>6}"
@@ -183,7 +183,7 @@ def format_bulk_hilat_report(
             )
             lines.append(
                 f"{r.date_key:<8}  {_fmt(r.ssha_bias):>8}  {_fmt(r.ssha_rmsd):>7}  "
-                f"{_fmt(r.rmsd_ratio, '.3f'):>9}  "
+                f"{_fmt(r.rmsd_ratio, '.3f'):>10}  "
                 f"{_fmt(r.ssha_pearson_r, '.3f'):>6}  {_fmt(r.ssha_std_ratio, '.3f'):>7}  "
                 f"{_fmt(r.self_rmsd_a):>7}  {_fmt(r.self_rmsd_b):>7}  "
                 f"{_fmt(r.noise_a):>7}  {_fmt(r.noise_b):>7}  "
@@ -206,7 +206,8 @@ def format_bulk_hilat_report(
             ("SSHA MAD-based std of diff", "ssha_robust_std_diff"),
             ("Self-baseline RMSD A (asc vs desc)", "self_rmsd_a"),
             ("Self-baseline RMSD B (asc vs desc)", "self_rmsd_b"),
-            ("RMSD / baseline", "rmsd_ratio"),
+            ("Matched RMSD (A vs B half-grids)", "matched_rmsd"),
+            ("Matched RMSD / baseline", "rmsd_ratio"),
             ("SSHA r", "ssha_pearson_r"),
             ("SSHA std ratio B/A", "ssha_std_ratio"),
             ("Noise RMS A (ssha - ssha_smoothed)", "noise_a"),

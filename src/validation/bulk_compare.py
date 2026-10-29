@@ -57,7 +57,8 @@ class FilePairResult:
     ssha_robust_std_diff: float | None = None
     ssha_rmsd_all: float | None = None  # including outlier cells
     baseline_rmsd: float | None = None
-    rmsd_ratio: float | None = None  # RMSD / baseline_rmsd
+    matched_rmsd: float | None = None  # A vs B on asc/desc half-grids
+    rmsd_ratio: float | None = None  # matched_rmsd / baseline_rmsd
     alignment_status: str | None = None  # PASS / FAIL / N/A
     alignment_reasons: list[str] = field(default_factory=list)
     error: str | None = None
@@ -190,6 +191,7 @@ def _compare_pair(
             result.ssha_rmsd_all = gridded["rmsd_all"]
             alignment = q["alignment"]
             result.baseline_rmsd = alignment["baseline_rmsd"]
+            result.matched_rmsd = alignment["matched_rmsd"]
             result.rmsd_ratio = alignment["rmsd_ratio"]
             result.alignment_status = alignment["status"]
             result.alignment_reasons = alignment["reasons"]

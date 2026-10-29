@@ -70,7 +70,8 @@ def _add_hilat_args(parser: argparse.ArgumentParser) -> None:
     )
     group.add_argument(
         "--rmsd-factor", type=float, default=d["rmsd_factor"], metavar="X",
-        help=f"FAIL if RMSD exceeds X times the baseline RMSD (default: {d['rmsd_factor']})",
+        help=f"FAIL if matched RMSD exceeds X times the baseline RMSD "
+        f"(default: {d['rmsd_factor']})",
     )
     group.add_argument(
         "--min-common-cells", type=int, default=d["min_common_cells"], metavar="N",

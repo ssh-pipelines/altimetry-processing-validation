@@ -295,15 +295,22 @@ class TestBulkHilatReporting:
         assert out.stat().st_size > 0
 
 
+def _spike_common_cell(ds_a, ds_b):
+    """Set B to 4 m in one 2-degree cell (lat 4..6) that A also observes."""
+    ds_b = ds_b.copy(deep=True)
+    lat_a, lon_a = ds_a["latitude"].values, ds_a["longitude"].values
+    lon0 = 2 * int(lon_a[(lat_a >= 4) & (lat_a < 6)][0] // 2)
+    lat, lon = ds_b["latitude"].values, ds_b["longitude"].values
+    spike = (lat >= 4) & (lat < 6) & (lon >= lon0) & (lon < lon0 + 2)
+    assert spike.any()
+    ds_b["ssha"].values[spike] = 4.0
+    return ds_b
+
+
 class TestOutlierExclusion:
     def test_outlier_cell_excluded_from_rmsd(self, ref_hilat_dss, tmp_path):
         ds_a, ds_b = ref_hilat_dss
-        ds_b = ds_b.copy(deep=True)
-        # Put a 4 m spike into every hi-lat point in one 2-degree cell.
-        lat, lon = ds_b["latitude"].values, ds_b["longitude"].values
-        spike = (lat >= 4) & (lat < 6) & (lon >= 100) & (lon < 102)
-        assert spike.any()
-        ds_b["ssha"].values[spike] = 4.0
+        ds_b = _spike_common_cell(ds_a, ds_b)
         path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
         g = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
             "ssha_gridded"
@@ -318,9 +325,7 @@ class TestOutlierExclusion:
 
     def test_outliers_excluded_from_lat_bands(self, ref_hilat_dss, tmp_path):
         ds_a, ds_b = ref_hilat_dss
-        ds_b = ds_b.copy(deep=True)
-        lat, lon = ds_b["latitude"].values, ds_b["longitude"].values
-        ds_b["ssha"].values[(lat >= 4) & (lat < 6) & (lon >= 100) & (lon < 102)] = 4.0
+        ds_b = _spike_common_cell(ds_a, ds_b)
         path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
         bands = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
             "lat_bands"
@@ -367,15 +372,21 @@ class TestAlignmentCheck:
         ds_a, ds_b = ref_hilat_dss
         ds_a = _with_passes(ds_a)
         ds_b = _with_passes(ds_b)
-        # Zero-mean noise on B only: raises A-vs-B RMSD far above both baselines.
+        # Zero-mean spatial pattern in B only. It is the same on ascending and
+        # descending passes, so it cannot appear in either file's baseline,
+        # but it raises A-vs-B RMSD. (Random per-point noise would also raise
+        # B's own baseline and is caught by the noise/std metrics instead.)
+        lon_b = ds_b["longitude"].values.astype(np.float64)
+        ds_b["ssha"] = ds_b["ssha"] + 0.1 * np.sin(np.radians(lon_b) * 6)
         rng = np.random.default_rng(1)
-        ds_b["ssha"] = ds_b["ssha"] + rng.normal(0, 0.3, ds_b.sizes["time"])
-        ds_a["ssha"] = ds_a["ssha"] + rng.normal(0, 0.001, ds_a.sizes["time"])
+        for ds in (ds_a, ds_b):
+            ds["ssha"] = ds["ssha"] + rng.normal(0, 0.01, ds.sizes["time"])
         path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
         a = AlongTrackHilatComparator(
             path_a, path_b, bin_size=2.0, outlier_cutoff=10.0
         ).run().quality_summary["alignment"]
         assert a["baseline_rmsd"] is not None
+        assert a["matched_rmsd"] > a["rmsd_limit"]
         assert any("baseline" in r for r in a["reasons"])
 
     def test_outlier_cells_fail(self, ref_hilat_dss, tmp_path):

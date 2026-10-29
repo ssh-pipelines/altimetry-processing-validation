@@ -183,9 +183,10 @@ def _format_alignment(a: dict) -> list[str]:
     ratio = f"{a['rmsd_ratio']:.3f}" if a["rmsd_ratio"] is not None else "N/A"
     lines = [
         f"    status: {a['status']}",
-        f"    baseline RMSD={_f(a['baseline_rmsd'])}  limit={_f(a['rmsd_limit'])}  "
-        f"RMSD/baseline={ratio}",
-        f"    criteria: |bias| <= {c['max_bias']} m, RMSD <= {c['rmsd_factor']}x baseline, "
+        f"    matched RMSD (A vs B half-grids)={_f(a['matched_rmsd'])}  "
+        f"baseline RMSD={_f(a['baseline_rmsd'])}  limit={_f(a['rmsd_limit'])}  "
+        f"matched/baseline={ratio}",
+        f"    criteria: |bias| <= {c['max_bias']} m, matched RMSD <= {c['rmsd_factor']}x baseline, "
         f"outlier cells <= {c['max_outlier_cells']} (cutoff {c['outlier_cutoff']} m), "
         f">= {c['min_common_cells']} common cells",
     ]

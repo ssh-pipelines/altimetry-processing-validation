@@ -16,7 +16,11 @@ Alongside the cross-file diffs, the comparator reports:
   the cross-file RMSD can be judged,
 - per-latitude-band sums that can be pooled across many files,
 - an alignment check (PASS/FAIL/N/A) judging bias and RMSD against the
-  self-consistency baseline rather than a fixed agreement threshold.
+  self-consistency baseline rather than a fixed agreement threshold. Because
+  each baseline cell mean uses only one pass direction (about half the
+  points), the RMSD judged against it is the *matched* cross RMSD: A's
+  ascending/descending half-grids vs B's, all four pairings pooled, so
+  measurement noise enters both statistics equally.
 
 Common cells whose |B - A| exceeds ``outlier_cutoff`` are counted and excluded
 from bias/RMSD/std (and from the baseline and latitude-band sums), so a single
@@ -222,7 +226,9 @@ class AlongTrackHilatComparator(AlongTrackComparator):
             grid_a, grid_b, ds_a, ds_b, residual_a, residual_b
         )
         summary["alignment"] = self._alignment(
-            summary["ssha_gridded"], summary["self_baseline"]
+            summary["ssha_gridded"],
+            summary["self_baseline"],
+            self._matched_cross_rmsd(self._half_grids(ds_a), self._half_grids(ds_b)),
         )
         return summary
 
@@ -331,21 +337,47 @@ class AlongTrackHilatComparator(AlongTrackComparator):
                 result["std_ratio"] = result["std_b"] / result["std_a"]
         return result
 
-    def _self_baseline(self, ds: xr.Dataset) -> dict | None:
-        """Ascending vs descending passes of one file on the comparison grid."""
+    def _half_grids(self, ds: xr.Dataset) -> tuple[np.ndarray, np.ndarray] | None:
+        """(ascending, descending) half-grids of one file, or None."""
         direction = _pass_direction(ds) if self._has_track(ds) else None
         if direction is None:
             return None
-        grid_asc = self._grid(ds, mask=direction > 0)
-        grid_desc = self._grid(ds, mask=direction < 0)
-        both = np.isfinite(grid_asc) & np.isfinite(grid_desc)
-        both &= np.abs(np.nan_to_num(grid_desc - grid_asc)) <= self.outlier_cutoff
-        result = {"n_common_cells": int(both.sum()), "rmsd": None, "bias": None}
-        if np.any(both):
-            stats = _diff_stats(grid_asc[both], grid_desc[both], self.threshold)
-            result["rmsd"] = round(stats["rmsd"], 6)
-            result["bias"] = round(stats["bias"], 6)
+        return self._grid(ds, mask=direction > 0), self._grid(ds, mask=direction < 0)
+
+    def _paired_diffs(self, grid_x: np.ndarray, grid_y: np.ndarray) -> np.ndarray:
+        """y - x over cells observed by both, excluding outlier cells."""
+        both = np.isfinite(grid_x) & np.isfinite(grid_y)
+        diff = grid_y[both] - grid_x[both]
+        return diff[np.abs(diff) <= self.outlier_cutoff]
+
+    def _self_baseline(self, ds: xr.Dataset) -> dict | None:
+        """Ascending vs descending passes of one file on the comparison grid."""
+        halves = self._half_grids(ds)
+        if halves is None:
+            return None
+        diff = self._paired_diffs(*halves)
+        result = {"n_common_cells": int(diff.size), "rmsd": None, "bias": None}
+        if diff.size:
+            result["rmsd"] = round(float(np.sqrt(np.mean(diff**2))), 6)
+            result["bias"] = round(float(np.mean(diff)), 6)
         return result
+
+    def _matched_cross_rmsd(
+        self,
+        halves_a: tuple[np.ndarray, np.ndarray] | None,
+        halves_b: tuple[np.ndarray, np.ndarray] | None,
+    ) -> float | None:
+        """RMSD of A vs B half-grids, all four direction pairings pooled.
+
+        Each half-grid cell mean has the same sampling as the self-baseline's,
+        so this is the cross-file counterpart to compare against it.
+        """
+        if halves_a is None or halves_b is None:
+            return None
+        diff = np.concatenate(
+            [self._paired_diffs(ga, gb) for ga in halves_a for gb in halves_b]
+        )
+        return float(np.sqrt(np.mean(diff**2))) if diff.size else None
 
     def _lat_band_sums(
         self,
@@ -394,23 +426,30 @@ class AlongTrackHilatComparator(AlongTrackComparator):
 
         return bands
 
-    def _alignment(self, gridded: dict, baseline: dict) -> dict:
+    def _alignment(
+        self, gridded: dict, baseline: dict, matched_rmsd: float | None
+    ) -> dict:
         """PASS/FAIL/N/A verdict on bias, RMSD vs baseline, and outlier count.
 
         The baseline RMSD is the RMS of the two files' ascending-vs-descending
-        RMSDs: the disagreement expected from gridding alone. RMSD is only
-        judged when a baseline is available.
+        RMSDs: the disagreement expected from gridding alone. It is compared
+        with *matched_rmsd* (A vs B on the same half-grids); RMSD is only
+        judged when both are available.
         """
         base_vals = [b["rmsd"] for b in baseline.values() if b and b["rmsd"] is not None]
         baseline_rmsd = float(np.sqrt(np.mean(np.square(base_vals)))) if base_vals else None
         rmsd_limit = self.rmsd_factor * baseline_rmsd if baseline_rmsd else None
-        rmsd = gridded["rmsd"]
         result = {
             "status": "N/A",
             "reasons": [],
             "baseline_rmsd": baseline_rmsd,
+            "matched_rmsd": matched_rmsd,
             "rmsd_limit": rmsd_limit,
-            "rmsd_ratio": rmsd / baseline_rmsd if rmsd is not None and baseline_rmsd else None,
+            "rmsd_ratio": (
+                matched_rmsd / baseline_rmsd
+                if matched_rmsd is not None and baseline_rmsd
+                else None
+            ),
             "criteria": {
                 "outlier_cutoff": self.outlier_cutoff,
                 "max_bias": self.max_bias,
@@ -430,9 +469,10 @@ class AlongTrackHilatComparator(AlongTrackComparator):
         reasons = result["reasons"]
         if abs(gridded["bias"]) > self.max_bias:
             reasons.append(f"|bias| {abs(gridded['bias']):.4f} m > {self.max_bias} m")
-        if rmsd_limit is not None and rmsd > rmsd_limit:
+        if rmsd_limit is not None and matched_rmsd is not None and matched_rmsd > rmsd_limit:
             reasons.append(
-                f"RMSD {rmsd:.4f} m > {self.rmsd_factor}x baseline ({rmsd_limit:.4f} m)"
+                f"matched RMSD {matched_rmsd:.4f} m > {self.rmsd_factor}x baseline "
+                f"({rmsd_limit:.4f} m)"
             )
         if gridded["n_outlier_cells"] > self.max_outlier_cells:
             reasons.append(
