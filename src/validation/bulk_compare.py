@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from validation.comparators.along_track_hilat import (
+    HILAT_DEFAULT_CRITERIA,
     AlongTrackHilatComparator,
     pool_lat_bands,
 )
@@ -51,6 +52,14 @@ class FilePairResult:
     self_rmsd_a: float | None = None
     self_rmsd_b: float | None = None
     lat_bands: list[dict] | None = None  # raw per-band sums; see pool_lat_bands
+    n_outlier_cells: int | None = None
+    ssha_median_abs_diff: float | None = None
+    ssha_robust_std_diff: float | None = None
+    ssha_rmsd_all: float | None = None  # including outlier cells
+    baseline_rmsd: float | None = None
+    rmsd_ratio: float | None = None  # RMSD / baseline_rmsd
+    alignment_status: str | None = None  # PASS / FAIL / N/A
+    alignment_reasons: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -65,8 +74,10 @@ class BulkComparisonReport:
     matched_pairs: list[FilePairResult] = field(default_factory=list)
     only_in_a: list[str] = field(default_factory=list)
     only_in_b: list[str] = field(default_factory=list)
-    # along_track_hilat only: per-band sums pooled across all matched pairs
+    # along_track_hilat only: per-band sums pooled across all matched pairs,
+    # and the alignment criteria applied to every pair
     lat_bands: list[dict] | None = None
+    criteria: dict | None = None
 
 
 def _extract_date(filename: str) -> str | None:
@@ -137,6 +148,7 @@ def _compare_pair(
     threshold: float,
     ignore_attrs: list[str] | None,
     product_type: str = "simple_grid",
+    criteria: dict | None = None,
 ) -> FilePairResult:
     """Compare a single file pair using the comparator for *product_type*."""
     print(date_key)
@@ -145,7 +157,9 @@ def _compare_pair(
 
     try:
         comparator_cls = BULK_COMPARATORS[product_type]
-        comparator = comparator_cls(str(file_a), str(file_b), threshold=threshold)
+        comparator = comparator_cls(
+            str(file_a), str(file_b), threshold=threshold, **(criteria or {})
+        )
         report = comparator.run(ignore_attrs=ignore_attrs)
 
         if product_type == "along_track_hilat":
@@ -170,10 +184,19 @@ def _compare_pair(
             result.self_rmsd_a = (q["self_baseline"]["a"] or {}).get("rmsd")
             result.self_rmsd_b = (q["self_baseline"]["b"] or {}).get("rmsd")
             result.lat_bands = q["lat_bands"]
+            result.n_outlier_cells = gridded["n_outlier_cells"]
+            result.ssha_median_abs_diff = gridded["median_abs_diff"]
+            result.ssha_robust_std_diff = gridded["robust_std_diff"]
+            result.ssha_rmsd_all = gridded["rmsd_all"]
+            alignment = q["alignment"]
+            result.baseline_rmsd = alignment["baseline_rmsd"]
+            result.rmsd_ratio = alignment["rmsd_ratio"]
+            result.alignment_status = alignment["status"]
+            result.alignment_reasons = alignment["reasons"]
             log.debug(
-                "  %s: SSHA agreement=%.1f%%  rmsd=%.4g  common cells=%d",
+                "  %s: alignment=%s  rmsd=%.4g  common cells=%d",
                 date_key,
-                result.ssha_pct_within_threshold or 0.0,
+                result.alignment_status,
                 result.ssha_rmsd or 0.0,
                 result.n_common_cells,
             )
@@ -216,6 +239,7 @@ def run_bulk_comparison(
     threshold: float = 0.05,
     ignore_attrs: list[str] | None = None,
     product_type: str = "simple_grid",
+    criteria: dict | None = None,
 ) -> BulkComparisonReport:
     """Compare all matching NetCDF files between two directories.
 
@@ -231,6 +255,10 @@ def run_bulk_comparison(
         Global/variable attribute names to ignore during comparison.
     product_type:
         Key into BULK_COMPARATORS selecting the comparator to use.
+    criteria:
+        along_track_hilat only: overrides for HILAT_DEFAULT_CRITERIA
+        (outlier_cutoff, max_bias, rmsd_factor, min_common_cells,
+        max_outlier_cells).
 
     Returns
     -------
@@ -246,7 +274,7 @@ def run_bulk_comparison(
 
     pairs, only_a, only_b = _match_files(dir_a, dir_b)
     matched_pairs = [
-        _compare_pair(fa, fb, dk, threshold, ignore_attrs, product_type)
+        _compare_pair(fa, fb, dk, threshold, ignore_attrs, product_type, criteria)
         for fa, fb, dk in pairs
     ]
 
@@ -257,11 +285,14 @@ def run_bulk_comparison(
     )
 
     lat_bands = None
+    applied_criteria = None
     if product_type == "along_track_hilat":
         lat_bands = pool_lat_bands([r.lat_bands for r in matched_pairs if r.lat_bands])
+        applied_criteria = {**HILAT_DEFAULT_CRITERIA, **(criteria or {})}
 
     return BulkComparisonReport(
         lat_bands=lat_bands,
+        criteria=applied_criteria,
         dir_a=dir_a,
         dir_b=dir_b,
         threshold=threshold,

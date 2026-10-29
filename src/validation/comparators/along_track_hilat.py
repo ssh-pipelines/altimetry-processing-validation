@@ -14,7 +14,14 @@ Alongside the cross-file diffs, the comparator reports:
   file binned onto the same grid. This approximates the diff level expected
   purely from gridding different tracks at different times, against which
   the cross-file RMSD can be judged,
-- per-latitude-band sums that can be pooled across many files.
+- per-latitude-band sums that can be pooled across many files,
+- an alignment check (PASS/FAIL/N/A) judging bias and RMSD against the
+  self-consistency baseline rather than a fixed agreement threshold.
+
+Common cells whose |B - A| exceeds ``outlier_cutoff`` are counted and excluded
+from bias/RMSD/std (and from the baseline and latitude-band sums), so a single
+bad cell cannot dominate them. Max abs diff and its location are still taken
+over all cells so outliers can be traced.
 """
 
 import numpy as np
@@ -25,9 +32,22 @@ from validation.comparators.along_track import AlongTrackComparator
 
 DEFAULT_LAT_BAND_EDGES = tuple(range(-90, 91, 10))
 
+# Defaults for outlier exclusion and the per-pair alignment check.
+HILAT_DEFAULT_CRITERIA = {
+    "outlier_cutoff": 1.0,  # m; cells with |B - A| above this are outliers
+    "max_bias": 0.02,  # m; FAIL if |bias| exceeds this
+    "rmsd_factor": 1.2,  # FAIL if RMSD > factor x baseline RMSD
+    "min_common_cells": 50,  # N/A below this many common cells
+    "max_outlier_cells": 0,  # FAIL if more outlier cells than this
+}
+
+# 1.4826 * MAD estimates the standard deviation for normally distributed data.
+_MAD_TO_STD = 1.4826
+
 # Raw per-band accumulators. Summed across files to pool latitude-band stats.
 LAT_BAND_SUM_KEYS = (
     "n_common_cells",
+    "n_outlier_cells",
     "sum_diff",
     "sum_diff_sq",
     "sum_a",
@@ -108,6 +128,7 @@ def summarise_lat_band(band: dict) -> dict:
         "lat_min": band["lat_min"],
         "lat_max": band["lat_max"],
         "n_common_cells": int(n),
+        "n_outlier_cells": int(band["n_outlier_cells"]),
         "bias": band["sum_diff"] / n if n else None,
         "rmsd": float(np.sqrt(band["sum_diff_sq"] / n)) if n else None,
         "std_a": std_a,
@@ -152,10 +173,20 @@ class AlongTrackHilatComparator(AlongTrackComparator):
         threshold: float = 0.05,
         bin_size: float = 1.0,
         lat_band_edges: tuple[float, ...] = DEFAULT_LAT_BAND_EDGES,
+        outlier_cutoff: float = HILAT_DEFAULT_CRITERIA["outlier_cutoff"],
+        max_bias: float = HILAT_DEFAULT_CRITERIA["max_bias"],
+        rmsd_factor: float = HILAT_DEFAULT_CRITERIA["rmsd_factor"],
+        min_common_cells: int = HILAT_DEFAULT_CRITERIA["min_common_cells"],
+        max_outlier_cells: int = HILAT_DEFAULT_CRITERIA["max_outlier_cells"],
     ):
         super().__init__(file_a, file_b, threshold=threshold)
         self.bin_size = bin_size
         self.lat_band_edges = tuple(lat_band_edges)
+        self.outlier_cutoff = outlier_cutoff
+        self.max_bias = max_bias
+        self.rmsd_factor = rmsd_factor
+        self.min_common_cells = min_common_cells
+        self.max_outlier_cells = max_outlier_cells
 
     @property
     def product_type(self) -> str:
@@ -189,6 +220,9 @@ class AlongTrackHilatComparator(AlongTrackComparator):
         }
         summary["lat_bands"] = self._lat_band_sums(
             grid_a, grid_b, ds_a, ds_b, residual_a, residual_b
+        )
+        summary["alignment"] = self._alignment(
+            summary["ssha_gridded"], summary["self_baseline"]
         )
         return summary
 
@@ -236,6 +270,11 @@ class AlongTrackHilatComparator(AlongTrackComparator):
             "max_abs_diff": None,
             "max_abs_diff_lat": None,
             "max_abs_diff_lon": None,
+            "outlier_cutoff_m": self.outlier_cutoff,
+            "n_outlier_cells": 0,
+            "median_abs_diff": None,
+            "robust_std_diff": None,
+            "rmsd_all": None,
             "mean_abs_diff": None,
             "rmsd": None,
             "bias": None,
@@ -257,12 +296,33 @@ class AlongTrackHilatComparator(AlongTrackComparator):
 
         av = grid_a[both]
         bv = grid_b[both]
-        result.update(_diff_stats(av, bv, self.threshold))
+        diff = bv - av
+        abs_diff = np.abs(diff)
 
-        abs_diff = np.where(both, np.abs(grid_b - grid_a), -np.inf)
-        i, j = np.unravel_index(np.argmax(abs_diff), abs_diff.shape)
+        # Outlier-insensitive diff spread, and stats over all cells for tracing.
+        result["median_abs_diff"] = float(np.median(abs_diff))
+        result["robust_std_diff"] = float(
+            _MAD_TO_STD * np.median(np.abs(diff - np.median(diff)))
+        )
+        result["rmsd_all"] = float(np.sqrt(np.mean(diff**2)))
+        result["max_abs_diff"] = float(np.max(abs_diff))
+        result["pct_within_threshold"] = round(
+            float(np.mean(abs_diff <= self.threshold) * 100), 2
+        )
+        abs_grid = np.where(both, np.abs(grid_b - grid_a), -np.inf)
+        i, j = np.unravel_index(np.argmax(abs_grid), abs_grid.shape)
         result["max_abs_diff_lat"] = -90.0 + (i + 0.5) * self.bin_size
         result["max_abs_diff_lon"] = (j + 0.5) * self.bin_size
+
+        # Bias/RMSD/std exclude outlier cells.
+        keep = abs_diff <= self.outlier_cutoff
+        result["n_outlier_cells"] = int((~keep).sum())
+        if not np.any(keep):
+            return result
+        av, bv = av[keep], bv[keep]
+        clean = _diff_stats(av, bv, self.threshold)
+        for key in ("mean_abs_diff", "rmsd", "bias", "pearson_r"):
+            result[key] = clean[key]
 
         if av.size > 1:
             result["std_a"] = float(np.std(av))
@@ -279,6 +339,7 @@ class AlongTrackHilatComparator(AlongTrackComparator):
         grid_asc = self._grid(ds, mask=direction > 0)
         grid_desc = self._grid(ds, mask=direction < 0)
         both = np.isfinite(grid_asc) & np.isfinite(grid_desc)
+        both &= np.abs(np.nan_to_num(grid_desc - grid_asc)) <= self.outlier_cutoff
         result = {"n_common_cells": int(both.sum()), "rmsd": None, "bias": None}
         if np.any(both):
             stats = _diff_stats(grid_asc[both], grid_desc[both], self.threshold)
@@ -308,8 +369,11 @@ class AlongTrackHilatComparator(AlongTrackComparator):
             both = np.isfinite(grid_a) & np.isfinite(grid_b)
             lat_c, a_c, b_c = cell_lat[both], grid_a[both], grid_b[both]
             d_c = b_c - a_c
+            outlier = np.abs(d_c) > self.outlier_cutoff
             for band in bands:
-                sel = (lat_c >= band["lat_min"]) & (lat_c < band["lat_max"])
+                in_band = (lat_c >= band["lat_min"]) & (lat_c < band["lat_max"])
+                band["n_outlier_cells"] = int((in_band & outlier).sum())
+                sel = in_band & ~outlier
                 band["n_common_cells"] = int(sel.sum())
                 band["sum_diff"] = float(d_c[sel].sum())
                 band["sum_diff_sq"] = float((d_c[sel] ** 2).sum())
@@ -329,3 +393,52 @@ class AlongTrackHilatComparator(AlongTrackComparator):
                 band[f"noise_sum_sq_{label}"] = float((residual[sel] ** 2).sum())
 
         return bands
+
+    def _alignment(self, gridded: dict, baseline: dict) -> dict:
+        """PASS/FAIL/N/A verdict on bias, RMSD vs baseline, and outlier count.
+
+        The baseline RMSD is the RMS of the two files' ascending-vs-descending
+        RMSDs: the disagreement expected from gridding alone. RMSD is only
+        judged when a baseline is available.
+        """
+        base_vals = [b["rmsd"] for b in baseline.values() if b and b["rmsd"] is not None]
+        baseline_rmsd = float(np.sqrt(np.mean(np.square(base_vals)))) if base_vals else None
+        rmsd_limit = self.rmsd_factor * baseline_rmsd if baseline_rmsd else None
+        rmsd = gridded["rmsd"]
+        result = {
+            "status": "N/A",
+            "reasons": [],
+            "baseline_rmsd": baseline_rmsd,
+            "rmsd_limit": rmsd_limit,
+            "rmsd_ratio": rmsd / baseline_rmsd if rmsd is not None and baseline_rmsd else None,
+            "criteria": {
+                "outlier_cutoff": self.outlier_cutoff,
+                "max_bias": self.max_bias,
+                "rmsd_factor": self.rmsd_factor,
+                "min_common_cells": self.min_common_cells,
+                "max_outlier_cells": self.max_outlier_cells,
+            },
+        }
+
+        n_cells = gridded["n_common_cells"] - gridded["n_outlier_cells"]
+        if n_cells < self.min_common_cells:
+            result["reasons"].append(
+                f"only {n_cells} usable common cells (< {self.min_common_cells})"
+            )
+            return result
+
+        reasons = result["reasons"]
+        if abs(gridded["bias"]) > self.max_bias:
+            reasons.append(f"|bias| {abs(gridded['bias']):.4f} m > {self.max_bias} m")
+        if rmsd_limit is not None and rmsd > rmsd_limit:
+            reasons.append(
+                f"RMSD {rmsd:.4f} m > {self.rmsd_factor}x baseline ({rmsd_limit:.4f} m)"
+            )
+        if gridded["n_outlier_cells"] > self.max_outlier_cells:
+            reasons.append(
+                f"{gridded['n_outlier_cells']} cell(s) with |B - A| > {self.outlier_cutoff} m "
+                f"(max {gridded['max_abs_diff']:.3f} m at lat={gridded['max_abs_diff_lat']:.1f} "
+                f"lon={gridded['max_abs_diff_lon']:.1f})"
+            )
+        result["status"] = "FAIL" if reasons else "PASS"
+        return result

@@ -293,3 +293,136 @@ class TestBulkHilatReporting:
         out = tmp_path / "hilat.png"
         plot_bulk_timeseries(bulk_report, output_path=out)
         assert out.stat().st_size > 0
+
+
+class TestOutlierExclusion:
+    def test_outlier_cell_excluded_from_rmsd(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_b = ds_b.copy(deep=True)
+        # Put a 4 m spike into every hi-lat point in one 2-degree cell.
+        lat, lon = ds_b["latitude"].values, ds_b["longitude"].values
+        spike = (lat >= 4) & (lat < 6) & (lon >= 100) & (lon < 102)
+        assert spike.any()
+        ds_b["ssha"].values[spike] = 4.0
+        path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
+        g = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
+            "ssha_gridded"
+        ]
+        assert g["n_outlier_cells"] == 1
+        assert g["max_abs_diff"] > 3.5
+        assert g["max_abs_diff_lat"] == pytest.approx(5.0)
+        assert g["rmsd_all"] > 0.05
+        assert g["rmsd"] < 0.02  # clean RMSD unaffected by the spike
+        assert g["median_abs_diff"] < 0.02
+        assert g["robust_std_diff"] < 0.02
+
+    def test_outliers_excluded_from_lat_bands(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_b = ds_b.copy(deep=True)
+        lat, lon = ds_b["latitude"].values, ds_b["longitude"].values
+        ds_b["ssha"].values[(lat >= 4) & (lat < 6) & (lon >= 100) & (lon < 102)] = 4.0
+        path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
+        bands = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
+            "lat_bands"
+        ]
+        band = summarise_lat_band(next(b for b in bands if b["lat_min"] == 0))
+        assert band["n_outlier_cells"] == 1
+        assert band["rmsd"] < 0.02
+        assert band["std_ratio"] == pytest.approx(1.0, abs=0.1)
+
+
+class TestAlignmentCheck:
+    def _alignment(self, tmp_path, ds_a, ds_b, **kwargs):
+        path_a, path_b = _write_pair(tmp_path, _with_passes(ds_a), _with_passes(ds_b))
+        return AlongTrackHilatComparator(path_a, path_b, bin_size=2.0, **kwargs).run()
+
+    def test_pass(self, ref_hilat_dss, tmp_path):
+        report = self._alignment(tmp_path, *ref_hilat_dss)
+        a = report.quality_summary["alignment"]
+        assert a["status"] == "PASS"
+        assert a["reasons"] == []
+
+    def test_bias_fails(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_b = _with_passes(ds_b)
+        ds_b["ssha"] = ds_b["ssha"] + 0.05
+        path_a, path_b = _write_pair(tmp_path, _with_passes(ds_a), ds_b)
+        a = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
+            "alignment"
+        ]
+        assert a["status"] == "FAIL"
+        assert any("bias" in r for r in a["reasons"])
+
+    def test_bias_within_custom_limit_passes(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_b = _with_passes(ds_b)
+        ds_b["ssha"] = ds_b["ssha"] + 0.05
+        path_a, path_b = _write_pair(tmp_path, _with_passes(ds_a), ds_b)
+        a = AlongTrackHilatComparator(
+            path_a, path_b, bin_size=2.0, max_bias=0.1, rmsd_factor=100
+        ).run().quality_summary["alignment"]
+        assert a["status"] == "PASS"
+
+    def test_rmsd_vs_baseline_fails(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_a = _with_passes(ds_a)
+        ds_b = _with_passes(ds_b)
+        # Zero-mean noise on B only: raises A-vs-B RMSD far above both baselines.
+        rng = np.random.default_rng(1)
+        ds_b["ssha"] = ds_b["ssha"] + rng.normal(0, 0.3, ds_b.sizes["time"])
+        ds_a["ssha"] = ds_a["ssha"] + rng.normal(0, 0.001, ds_a.sizes["time"])
+        path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
+        a = AlongTrackHilatComparator(
+            path_a, path_b, bin_size=2.0, outlier_cutoff=10.0
+        ).run().quality_summary["alignment"]
+        assert a["baseline_rmsd"] is not None
+        assert any("baseline" in r for r in a["reasons"])
+
+    def test_outlier_cells_fail(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        ds_b = _with_passes(ds_b)
+        ds_b["ssha"].values[:5] = 4.0
+        path_a, path_b = _write_pair(tmp_path, _with_passes(ds_a), ds_b)
+        a = AlongTrackHilatComparator(path_a, path_b, bin_size=2.0).run().quality_summary[
+            "alignment"
+        ]
+        assert a["status"] == "FAIL"
+        assert any("cell(s)" in r for r in a["reasons"])
+
+    def test_too_few_cells_is_na(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = ref_hilat_dss
+        path_a, path_b = _write_pair(tmp_path, ds_a, ds_b.isel(time=slice(0, 5)))
+        a = AlongTrackHilatComparator(path_a, path_b).run().quality_summary["alignment"]
+        assert a["status"] == "N/A"
+
+    def test_cli_exit_codes(self, ref_hilat_dss, tmp_path):
+        from validation.cli import main
+
+        ds_a, ds_b = (_with_passes(d) for d in ref_hilat_dss)
+        path_a, path_b = _write_pair(tmp_path, ds_a, ds_b)
+        assert main([path_a, path_b, "-t", "along_track_hilat"]) == 0
+        ds_b["ssha"] = ds_b["ssha"] + 0.05
+        ds_b.to_netcdf(path_b)
+        assert main([path_a, path_b, "-t", "along_track_hilat"]) == 1
+        assert main([path_a, path_b, "-t", "along_track_hilat", "--max-bias", "0.1",
+                     "--rmsd-factor", "100"]) == 0
+
+    def test_bulk_status_and_report(self, ref_hilat_dss, tmp_path):
+        ds_a, ds_b = (_with_passes(d) for d in ref_hilat_dss)
+        dir_a = tmp_path / "ref"
+        dir_b = tmp_path / "hilat"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        ds_a.to_netcdf(dir_a / _REF_NAME.format(date="20201023"))
+        ds_b.to_netcdf(dir_b / _HILAT_NAME.format(date="20201023"))
+        ds_a.to_netcdf(dir_a / _REF_NAME.format(date="20201024"))
+        (ds_b + 0).assign(ssha=ds_b["ssha"] + 0.05).to_netcdf(
+            dir_b / _HILAT_NAME.format(date="20201024")
+        )
+
+        report = run_bulk_comparison(dir_a, dir_b, product_type="along_track_hilat")
+        assert [r.alignment_status for r in report.matched_pairs] == ["PASS", "FAIL"]
+        assert report.criteria["max_bias"] == 0.02
+        text = format_bulk_report(report)
+        assert "Days failing the alignment check (1):" in text
+        assert "Days passing alignment check: 1/2 judged" in text

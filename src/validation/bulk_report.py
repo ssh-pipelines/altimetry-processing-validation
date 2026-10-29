@@ -12,6 +12,8 @@ from validation.report import format_lat_bands
 def _status(result: FilePairResult, pass_threshold: float) -> str:
     if result.error:
         return "ERROR"
+    if result.alignment_status is not None:
+        return result.alignment_status
     if result.ssha_pct_within_threshold is None:
         return "N/A"
     return "PASS" if result.ssha_pct_within_threshold >= pass_threshold else "FAIL"
@@ -89,6 +91,17 @@ def format_bulk_report(
 
 
 def _pass_summary(report: BulkComparisonReport, pass_threshold: float) -> str:
+    if report.product_type == "along_track_hilat":
+        statuses = [_status(r, pass_threshold) for r in report.matched_pairs]
+        n_total = len(statuses)
+        n_pass = statuses.count("PASS")
+        n_judged = n_total - statuses.count("N/A")
+        pct = (n_pass / n_judged * 100) if n_judged else 0.0
+        return (
+            f"Days passing alignment check: {n_pass}/{n_judged} judged ({pct:.1f}%)  |  "
+            f"FAIL: {statuses.count('FAIL')}  N/A: {statuses.count('N/A')}  "
+            f"ERROR: {statuses.count('ERROR')}"
+        )
     n_total = len(report.matched_pairs)
     n_pass = sum(1 for r in report.matched_pairs if _status(r, pass_threshold) == "PASS")
     pct_pass = (n_pass / n_total * 100) if n_total > 0 else 0.0
@@ -144,12 +157,20 @@ def format_bulk_hilat_report(
 ) -> str:
     """Format an along_track_hilat bulk report (ref A vs high-lat B)."""
     lines = _header(report, "Bulk Reference vs High-Latitude Along-Track Comparison Report")
+    c = report.criteria or {}
+    if c:
+        lines.insert(
+            -1,
+            f"  Alignment check: |bias| <= {c['max_bias']} m, RMSD <= {c['rmsd_factor']}x "
+            f"baseline, outlier cells <= {c['max_outlier_cells']} "
+            f"(|B - A| > {c['outlier_cutoff']} m), >= {c['min_common_cells']} common cells",
+        )
 
     if report.matched_pairs:
         header = (
-            f"{'Date':<8}  {'Bias':>8}  {'RMSD':>7}  {'r':>6}  {'B/A std':>7}  "
-            f"{'Self A':>7}  {'Self B':>7}  {'Noise A':>7}  {'Noise B':>7}  "
-            f"{'Cells A':>7}  {'Cells B':>7}  {'Common':>6}  {'MaxAbs':>7}  "
+            f"{'Date':<8}  {'Bias':>8}  {'RMSD':>7}  {'RMSD/Base':>9}  {'r':>6}  "
+            f"{'B/A std':>7}  {'Self A':>7}  {'Self B':>7}  {'Noise A':>7}  {'Noise B':>7}  "
+            f"{'Cells A':>7}  {'Cells B':>7}  {'Common':>6}  {'Outl':>4}  {'MaxAbs':>7}  "
             f"{'@lat,lon':>13}  {'Status':>6}"
         )
         lines.append(header)
@@ -162,11 +183,13 @@ def format_bulk_hilat_report(
             )
             lines.append(
                 f"{r.date_key:<8}  {_fmt(r.ssha_bias):>8}  {_fmt(r.ssha_rmsd):>7}  "
+                f"{_fmt(r.rmsd_ratio, '.3f'):>9}  "
                 f"{_fmt(r.ssha_pearson_r, '.3f'):>6}  {_fmt(r.ssha_std_ratio, '.3f'):>7}  "
                 f"{_fmt(r.self_rmsd_a):>7}  {_fmt(r.self_rmsd_b):>7}  "
                 f"{_fmt(r.noise_a):>7}  {_fmt(r.noise_b):>7}  "
                 f"{_fmt(r.cells_a, 'd'):>7}  {_fmt(r.cells_b, 'd'):>7}  "
-                f"{_fmt(r.n_common_cells, 'd'):>6}  {_fmt(r.ssha_max_abs_diff):>7}  "
+                f"{_fmt(r.n_common_cells, 'd'):>6}  {_fmt(r.n_outlier_cells, 'd'):>4}  "
+                f"{_fmt(r.ssha_max_abs_diff):>7}  "
                 f"{loc:>13}  {_status(r, pass_threshold):>6}"
             )
         lines.append("")
@@ -174,11 +197,16 @@ def format_bulk_hilat_report(
     valid = [r for r in report.matched_pairs if r.error is None]
     lines.append("--- Aggregate Statistics (per-day values) ---")
     if valid:
+        lines.append("  (bias/RMSD/r/std exclude outlier cells; median/MAD and max include them)")
         for label, attr in [
             ("SSHA bias (B - A)", "ssha_bias"),
             ("SSHA RMSD", "ssha_rmsd"),
+            ("SSHA RMSD incl. outliers", "ssha_rmsd_all"),
+            ("SSHA median abs diff", "ssha_median_abs_diff"),
+            ("SSHA MAD-based std of diff", "ssha_robust_std_diff"),
             ("Self-baseline RMSD A (asc vs desc)", "self_rmsd_a"),
             ("Self-baseline RMSD B (asc vs desc)", "self_rmsd_b"),
+            ("RMSD / baseline", "rmsd_ratio"),
             ("SSHA r", "ssha_pearson_r"),
             ("SSHA std ratio B/A", "ssha_std_ratio"),
             ("Noise RMS A (ssha - ssha_smoothed)", "noise_a"),
@@ -186,8 +214,16 @@ def format_bulk_hilat_report(
             ("SSHA agreement %", "ssha_pct_within_threshold"),
             ("SSHA max abs diff", "ssha_max_abs_diff"),
             ("Common cells", "n_common_cells"),
+            ("Outlier cells", "n_outlier_cells"),
         ]:
             lines.append(_stat_line(label, [getattr(r, attr) for r in valid]))
+
+        failed = [r for r in valid if r.alignment_status == "FAIL"]
+        if failed:
+            lines.append("")
+            lines.append(f"Days failing the alignment check ({len(failed)}):")
+            for r in failed:
+                lines.append(f"  {r.date_key}  " + "; ".join(r.alignment_reasons))
 
         no_overlap = [r for r in valid if not r.n_common_cells]
         if no_overlap:
@@ -202,8 +238,8 @@ def format_bulk_hilat_report(
     if report.lat_bands:
         lines.append("--- Latitude Bands (pooled over all days) ---")
         lines.append(
-            "  Bias/RMSD/Std over common grid cells; Noise = RMS(ssha - ssha_smoothed) "
-            "over all flag-good points"
+            "  Bias/RMSD/Std over common grid cells excluding outliers (Outl); "
+            "Noise = RMS(ssha - ssha_smoothed) over all flag-good points"
         )
         lines.extend(
             line[2:] for line in format_lat_bands(

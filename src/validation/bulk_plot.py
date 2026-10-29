@@ -139,7 +139,9 @@ def plot_bulk_hilat(
       2. Std ratio B/A
       3. Noise RMS for each file
 
-    Days with an error or no common cells are marked with vertical red lines.
+    Days with an error or no common cells are marked with vertical red lines;
+    days failing the alignment check with dotted purple lines. The bias and
+    RMSD panels show the alignment-check limits as red dashed lines.
     """
     pairs = report.matched_pairs
     if not pairs:
@@ -167,12 +169,24 @@ def plot_bulk_hilat(
     ax = ts_axes[0]
     ax.plot(dates, _vals("ssha_bias"), color="steelblue", label="Bias (B − A)", **style)
     ax.axhline(0.0, color="black", linewidth=0.5, linestyle="--")
+    if report.criteria:
+        for sign in (1, -1):
+            ax.axhline(sign * report.criteria["max_bias"], color="red", linewidth=0.6,
+                       linestyle="--", label="±max bias" if sign > 0 else None)
     ax.set_ylabel("Bias (m)")
 
     ax = ts_axes[1]
     ax.plot(dates, _vals("ssha_rmsd"), color="steelblue", label="RMSD A vs B", **style)
     ax.plot(dates, _vals("self_rmsd_a"), color="gray", label="A asc vs desc", **style)
     ax.plot(dates, _vals("self_rmsd_b"), color="darkorange", label="B asc vs desc", **style)
+    if report.criteria:
+        factor = report.criteria["rmsd_factor"]
+        limits = [
+            r.baseline_rmsd * factor if r.baseline_rmsd is not None and r.error is None else None
+            for r in pairs
+        ]
+        ax.plot(dates, limits, color="red", linewidth=0.6, linestyle="--",
+                label=f"{factor}x baseline")
     ax.set_ylabel("RMSD (m)")
 
     ax = ts_axes[2]
@@ -192,10 +206,13 @@ def plot_bulk_hilat(
     ax.plot(dates, _vals("n_common_cells"), color="steelblue", label="Common", **style)
     ax.set_ylabel("Grid cells")
 
-    bad_dates = [d for d, r in zip(dates, pairs) if r.error or not r.n_common_cells]
+    gap_dates = [d for d, r in zip(dates, pairs) if r.error or not r.n_common_cells]
+    fail_dates = [d for d, r in zip(dates, pairs) if r.alignment_status == "FAIL"]
     for ax in ts_axes:
-        for bd in bad_dates:
-            ax.axvline(bd, color="red", linewidth=0.8, alpha=0.3)
+        for gd in gap_dates:
+            ax.axvline(gd, color="red", linewidth=0.8, alpha=0.3)
+        for fd in fail_dates:
+            ax.axvline(fd, color="purple", linewidth=0.8, alpha=0.5, linestyle=":")
         ax.legend(fontsize=7, loc="upper left", ncol=3)
         ax.grid(True, linewidth=0.4, alpha=0.5)
     for ax in ts_axes[:-1]:

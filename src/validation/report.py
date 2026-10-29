@@ -66,6 +66,8 @@ def format_report(report: ComparisonReport) -> str:
                 lines.append(f"    threshold: {t} m  |  pct_within: {pct_str}")
             elif key == "ssha_gridded" and isinstance(value, dict):
                 lines.extend(_format_gridded(value))
+            elif key == "alignment" and isinstance(value, dict):
+                lines.extend(_format_alignment(value))
             elif key == "lat_bands" and isinstance(value, list):
                 lines.extend(format_lat_bands([summarise_lat_band(b) for b in value]))
             elif isinstance(value, dict):
@@ -78,7 +80,10 @@ def format_report(report: ComparisonReport) -> str:
     lines.append("")
 
     # Summary
-    if report.has_differences:
+    alignment = report.quality_summary.get("alignment")
+    if report.product_type == "along_track_hilat" and alignment:
+        lines.append(f"RESULT: ALIGNMENT {alignment['status']}")
+    elif report.has_differences:
         lines.append("RESULT: DIFFERENCES FOUND")
     else:
         lines.append("RESULT: FILES MATCH")
@@ -137,13 +142,25 @@ def _format_gridded(g: dict) -> list[str]:
     if g.get("max_abs_diff") is None:
         lines.append("    Diff: no commonly observed cells")
         return lines
-    r_str = f"  r={g['pearson_r']:.4f}" if g.get("pearson_r") is not None else ""
     lines.append(
-        f"    Diff: max_abs={g['max_abs_diff']:.6g}  mean_abs={g['mean_abs_diff']:.6g}  "
-        f"rmsd={g['rmsd']:.6g}  bias={g['bias']:.6g}{r_str}"
+        f"    Outliers: {g['n_outlier_cells']} cell(s) with |B - A| > "
+        f"{g['outlier_cutoff_m']} m, excluded from bias/RMSD/std below"
     )
     lines.append(
-        f"    Largest diff at lat={g['max_abs_diff_lat']:.1f}  lon={g['max_abs_diff_lon']:.1f}"
+        f"    Largest diff: {g['max_abs_diff']:.6g} at lat={g['max_abs_diff_lat']:.1f}  "
+        f"lon={g['max_abs_diff_lon']:.1f}  (RMSD incl. outliers={g['rmsd_all']:.6g})"
+    )
+    lines.append(
+        f"    Robust (all cells): median_abs={g['median_abs_diff']:.6g}  "
+        f"MAD-based std={g['robust_std_diff']:.6g}"
+    )
+    if g.get("rmsd") is None:
+        lines.append("    Diff: every common cell is an outlier")
+        return lines
+    r_str = f"  r={g['pearson_r']:.4f}" if g.get("pearson_r") is not None else ""
+    lines.append(
+        f"    Diff: mean_abs={g['mean_abs_diff']:.6g}  "
+        f"rmsd={g['rmsd']:.6g}  bias={g['bias']:.6g}{r_str}"
     )
     lines.append(
         f"    threshold: {g['threshold_m']} m  |  pct_within: {g['pct_within_threshold']}%"
@@ -156,6 +173,27 @@ def _format_gridded(g: dict) -> list[str]:
     return lines
 
 
+def _format_alignment(a: dict) -> list[str]:
+    """Format the along_track_hilat alignment verdict."""
+    c = a["criteria"]
+
+    def _f(v):
+        return f"{v:.4f}" if v is not None else "N/A"
+
+    ratio = f"{a['rmsd_ratio']:.3f}" if a["rmsd_ratio"] is not None else "N/A"
+    lines = [
+        f"    status: {a['status']}",
+        f"    baseline RMSD={_f(a['baseline_rmsd'])}  limit={_f(a['rmsd_limit'])}  "
+        f"RMSD/baseline={ratio}",
+        f"    criteria: |bias| <= {c['max_bias']} m, RMSD <= {c['rmsd_factor']}x baseline, "
+        f"outlier cells <= {c['max_outlier_cells']} (cutoff {c['outlier_cutoff']} m), "
+        f">= {c['min_common_cells']} common cells",
+    ]
+    for reason in a["reasons"]:
+        lines.append(f"    - {reason}")
+    return lines
+
+
 def format_lat_bands(bands: list[dict]) -> list[str]:
     """Format summarised latitude-band stats as a table (bands with any data)."""
 
@@ -163,7 +201,7 @@ def format_lat_bands(bands: list[dict]) -> list[str]:
         return format(v, fmt) if v is not None else "N/A"
 
     header = (
-        f"    {'Band':>11}  {'Cells':>7}  {'Bias':>8}  {'RMSD':>7}  "
+        f"    {'Band':>11}  {'Cells':>7}  {'Outl':>5}  {'Bias':>8}  {'RMSD':>7}  "
         f"{'Std A':>7}  {'Std B':>7}  {'B/A':>6}  {'Noise A':>7}  {'Noise B':>7}"
     )
     lines = [header, "    " + "-" * (len(header) - 4)]
@@ -172,7 +210,8 @@ def format_lat_bands(bands: list[dict]) -> list[str]:
             continue
         band = f"{b['lat_min']:g}..{b['lat_max']:g}"
         lines.append(
-            f"    {band:>11}  {b['n_common_cells']:>7}  {_f(b['bias']):>8}  "
+            f"    {band:>11}  {b['n_common_cells']:>7}  {b['n_outlier_cells']:>5}  "
+            f"{_f(b['bias']):>8}  "
             f"{_f(b['rmsd']):>7}  {_f(b['std_a']):>7}  {_f(b['std_b']):>7}  "
             f"{_f(b['std_ratio'], '.3f'):>6}  {_f(b['noise_a']):>7}  {_f(b['noise_b']):>7}"
         )

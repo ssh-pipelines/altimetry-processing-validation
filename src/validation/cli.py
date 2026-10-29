@@ -6,7 +6,10 @@ import sys
 from validation.bulk_compare import BULK_COMPARATORS, run_bulk_comparison
 from validation.bulk_report import format_bulk_report
 from validation.comparators.along_track import AlongTrackComparator
-from validation.comparators.along_track_hilat import AlongTrackHilatComparator
+from validation.comparators.along_track_hilat import (
+    HILAT_DEFAULT_CRITERIA,
+    AlongTrackHilatComparator,
+)
 from validation.comparators.indicators import IndicatorsComparator
 from validation.comparators.simple_grid import SimpleGridComparator
 from validation.report import format_report
@@ -45,7 +48,42 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="METERS",
         help="Absolute difference threshold in metres for the pct_within_threshold metric (default: 0.05)",
     )
+    _add_hilat_args(parser)
     return parser
+
+
+def _add_hilat_args(parser: argparse.ArgumentParser) -> None:
+    """Alignment-check options for along_track_hilat."""
+    d = HILAT_DEFAULT_CRITERIA
+    group = parser.add_argument_group(
+        "along_track_hilat alignment check",
+        "PASS/FAIL on bias, RMSD relative to the asc-vs-desc baseline, and outlier cells.",
+    )
+    group.add_argument(
+        "--outlier-cutoff", type=float, default=d["outlier_cutoff"], metavar="METERS",
+        help=f"Cells with |B - A| above this are outliers, excluded from bias/RMSD/std "
+        f"(default: {d['outlier_cutoff']})",
+    )
+    group.add_argument(
+        "--max-bias", type=float, default=d["max_bias"], metavar="METERS",
+        help=f"FAIL if |bias| exceeds this (default: {d['max_bias']})",
+    )
+    group.add_argument(
+        "--rmsd-factor", type=float, default=d["rmsd_factor"], metavar="X",
+        help=f"FAIL if RMSD exceeds X times the baseline RMSD (default: {d['rmsd_factor']})",
+    )
+    group.add_argument(
+        "--min-common-cells", type=int, default=d["min_common_cells"], metavar="N",
+        help=f"N/A if fewer common cells than this (default: {d['min_common_cells']})",
+    )
+    group.add_argument(
+        "--max-outlier-cells", type=int, default=d["max_outlier_cells"], metavar="N",
+        help=f"FAIL if more outlier cells than this (default: {d['max_outlier_cells']})",
+    )
+
+
+def _hilat_criteria(args: argparse.Namespace) -> dict:
+    return {key: getattr(args, key) for key in HILAT_DEFAULT_CRITERIA}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,11 +91,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     comparator_cls = COMPARATORS[args.product_type]
-    comparator = comparator_cls(args.file_a, args.file_b, threshold=args.threshold)
+    kwargs = _hilat_criteria(args) if args.product_type == "along_track_hilat" else {}
+    comparator = comparator_cls(args.file_a, args.file_b, threshold=args.threshold, **kwargs)
 
     report = comparator.run(ignore_attrs=args.ignore_attrs)
     print(format_report(report))
 
+    if args.product_type == "along_track_hilat":
+        return 0 if report.quality_summary["alignment"]["status"] == "PASS" else 1
     return 1 if report.has_differences else 0
 
 
@@ -94,7 +135,8 @@ def build_bulk_parser() -> argparse.ArgumentParser:
         type=float,
         default=95.0,
         metavar="PCT",
-        help="Min SSHA agreement %% for PASS status (default: 95.0)",
+        help="Min SSHA agreement %% for PASS status (default: 95.0; "
+        "not used by along_track_hilat)",
     )
     parser.add_argument(
         "--plot",
@@ -102,19 +144,25 @@ def build_bulk_parser() -> argparse.ArgumentParser:
         default=None,
         help="Save a timeseries plot of difference metrics to this path (e.g. report.png)",
     )
+    _add_hilat_args(parser)
     return parser
 
 
 def bulk_main(argv: list[str] | None = None) -> int:
     args = build_bulk_parser().parse_args(argv)
+    criteria = _hilat_criteria(args) if args.product_type == "along_track_hilat" else None
     report = run_bulk_comparison(
-        args.dir_a, args.dir_b, args.threshold, args.ignore_attrs, args.product_type
+        args.dir_a, args.dir_b, args.threshold, args.ignore_attrs, args.product_type, criteria
     )
     print(format_bulk_report(report, pass_threshold=args.pass_threshold))
 
     if args.plot is not None:
         from validation.bulk_plot import plot_bulk_timeseries
         plot_bulk_timeseries(report, output_path=args.plot, pass_threshold=args.pass_threshold)
+
+    if args.product_type == "along_track_hilat":
+        any_fail = any(r.error or r.alignment_status == "FAIL" for r in report.matched_pairs)
+        return 1 if any_fail else 0
 
     any_fail = any(
         r.error
