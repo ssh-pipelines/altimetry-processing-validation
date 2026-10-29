@@ -1,5 +1,7 @@
 """Tests for the CLI entry point."""
 
+import numpy as np
+
 from validation.cli import main
 
 
@@ -32,6 +34,18 @@ class TestCLI:
             [str(path_a), str(path_b), "-t", "along_track",
              "--ignore-attrs", "date_created"]
         )
+        assert rc == 0
+
+    def test_along_track_hilat_type(self, along_track_ds, tmp_path):
+        ds = along_track_ds.assign_coords(
+            latitude=("time", np.linspace(-80, 80, along_track_ds.sizes["time"])),
+            longitude=("time", np.linspace(0, 359, along_track_ds.sizes["time"])),
+        )
+        path_a = tmp_path / "a.nc"
+        path_b = tmp_path / "b.nc"
+        ds.to_netcdf(path_a)
+        ds.to_netcdf(path_b)
+        rc = main([str(path_a), str(path_b), "-t", "along_track_hilat"])
         assert rc == 0
 
     def test_simple_grid_type(self, simple_grid_pair):

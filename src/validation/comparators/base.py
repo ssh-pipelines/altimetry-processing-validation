@@ -56,6 +56,11 @@ class ComparisonReport:
 class BaseComparator(ABC):
     """Abstract base for product-type comparators."""
 
+    # Whether variables are differenced element-by-element. Disable for
+    # products whose files are not sampled on a shared index (e.g. different
+    # orbits), where element-wise diffs are meaningless.
+    POINTWISE_DIFFS = True
+
     def __init__(self, file_a: str, file_b: str, threshold: float = 0.05):
         self.file_a = file_a
         self.file_b = file_b
@@ -108,7 +113,8 @@ class BaseComparator(ABC):
             if in_b:
                 vc.stats_b = compute_variable_stats(ds_b[var_name])
             if in_a and in_b:
-                vc.diff = compute_variable_diff(ds_a[var_name], ds_b[var_name])
+                if self.POINTWISE_DIFFS:
+                    vc.diff = compute_variable_diff(ds_a[var_name], ds_b[var_name])
                 vc.attr_diffs = compare_attributes(
                     dict(ds_a[var_name].attrs),
                     dict(ds_b[var_name].attrs),

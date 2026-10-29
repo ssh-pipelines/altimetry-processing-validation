@@ -3,15 +3,17 @@
 import argparse
 import sys
 
-from validation.bulk_compare import run_bulk_comparison
+from validation.bulk_compare import BULK_COMPARATORS, run_bulk_comparison
 from validation.bulk_report import format_bulk_report
 from validation.comparators.along_track import AlongTrackComparator
+from validation.comparators.along_track_hilat import AlongTrackHilatComparator
 from validation.comparators.indicators import IndicatorsComparator
 from validation.comparators.simple_grid import SimpleGridComparator
 from validation.report import format_report
 
 COMPARATORS = {
     "along_track": AlongTrackComparator,
+    "along_track_hilat": AlongTrackHilatComparator,
     "simple_grid": SimpleGridComparator,
 }
 
@@ -62,10 +64,18 @@ def main(argv: list[str] | None = None) -> int:
 def build_bulk_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bulk-validate-altimetry",
-        description="Compare two directories of simple-grid NetCDF files.",
+        description="Compare two directories of NetCDF files, matched by filename date.",
     )
     parser.add_argument("dir_a", help="Path to first directory")
     parser.add_argument("dir_b", help="Path to second directory")
+    parser.add_argument(
+        "-t",
+        "--product-type",
+        default="simple_grid",
+        choices=list(BULK_COMPARATORS.keys()),
+        help="Product type to compare (default: simple_grid). For along_track_hilat, "
+        "dir_a holds reference along-track files and dir_b high-latitude files.",
+    )
     parser.add_argument(
         "--ignore-attrs",
         nargs="*",
@@ -97,7 +107,9 @@ def build_bulk_parser() -> argparse.ArgumentParser:
 
 def bulk_main(argv: list[str] | None = None) -> int:
     args = build_bulk_parser().parse_args(argv)
-    report = run_bulk_comparison(args.dir_a, args.dir_b, args.threshold, args.ignore_attrs)
+    report = run_bulk_comparison(
+        args.dir_a, args.dir_b, args.threshold, args.ignore_attrs, args.product_type
+    )
     print(format_bulk_report(report, pass_threshold=args.pass_threshold))
 
     if args.plot is not None:

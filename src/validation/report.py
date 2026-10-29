@@ -1,5 +1,6 @@
 """Plain-text report formatting for comparison results."""
 
+from validation.comparators.along_track_hilat import summarise_lat_band
 from validation.comparators.base import ComparisonReport, VariableComparison
 
 
@@ -63,6 +64,10 @@ def format_report(report: ComparisonReport) -> str:
                 pct = value["pct_within_threshold"]
                 pct_str = f"{pct}%" if pct is not None else "N/A"
                 lines.append(f"    threshold: {t} m  |  pct_within: {pct_str}")
+            elif key == "ssha_gridded" and isinstance(value, dict):
+                lines.extend(_format_gridded(value))
+            elif key == "lat_bands" and isinstance(value, list):
+                lines.extend(format_lat_bands([summarise_lat_band(b) for b in value]))
             elif isinstance(value, dict):
                 for side, data in value.items():
                     lines.append(f"    {side}: {data}")
@@ -121,6 +126,57 @@ def _format_variable(vc: VariableComparison) -> str:
             parts.append(f"      {attr}: A={_truncate(val_a)} | B={_truncate(val_b)}")
 
     return "\n".join(parts)
+
+
+def _format_gridded(g: dict) -> list[str]:
+    """Format the gridded SSHA comparison block (along_track_hilat)."""
+    lines = [
+        f"    bin: {g['bin_size_deg']} deg  |  cells A={g['cells_a']}  "
+        f"B={g['cells_b']}  common={g['n_common_cells']}"
+    ]
+    if g.get("max_abs_diff") is None:
+        lines.append("    Diff: no commonly observed cells")
+        return lines
+    r_str = f"  r={g['pearson_r']:.4f}" if g.get("pearson_r") is not None else ""
+    lines.append(
+        f"    Diff: max_abs={g['max_abs_diff']:.6g}  mean_abs={g['mean_abs_diff']:.6g}  "
+        f"rmsd={g['rmsd']:.6g}  bias={g['bias']:.6g}{r_str}"
+    )
+    lines.append(
+        f"    Largest diff at lat={g['max_abs_diff_lat']:.1f}  lon={g['max_abs_diff_lon']:.1f}"
+    )
+    lines.append(
+        f"    threshold: {g['threshold_m']} m  |  pct_within: {g['pct_within_threshold']}%"
+    )
+    if g.get("std_ratio") is not None:
+        lines.append(
+            f"    Variability over common cells: std A={g['std_a']:.6g}  "
+            f"std B={g['std_b']:.6g}  ratio B/A={g['std_ratio']:.4f}"
+        )
+    return lines
+
+
+def format_lat_bands(bands: list[dict]) -> list[str]:
+    """Format summarised latitude-band stats as a table (bands with any data)."""
+
+    def _f(v, fmt=".4f"):
+        return format(v, fmt) if v is not None else "N/A"
+
+    header = (
+        f"    {'Band':>11}  {'Cells':>7}  {'Bias':>8}  {'RMSD':>7}  "
+        f"{'Std A':>7}  {'Std B':>7}  {'B/A':>6}  {'Noise A':>7}  {'Noise B':>7}"
+    )
+    lines = [header, "    " + "-" * (len(header) - 4)]
+    for b in bands:
+        if not b["n_common_cells"] and b["noise_a"] is None and b["noise_b"] is None:
+            continue
+        band = f"{b['lat_min']:g}..{b['lat_max']:g}"
+        lines.append(
+            f"    {band:>11}  {b['n_common_cells']:>7}  {_f(b['bias']):>8}  "
+            f"{_f(b['rmsd']):>7}  {_f(b['std_a']):>7}  {_f(b['std_b']):>7}  "
+            f"{_f(b['std_ratio'], '.3f'):>6}  {_f(b['noise_a']):>7}  {_f(b['noise_b']):>7}"
+        )
+    return lines
 
 
 def _truncate(value, max_len: int = 80) -> str:

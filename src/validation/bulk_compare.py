@@ -1,4 +1,4 @@
-"""Bulk directory comparison for simple-grid NetCDF files."""
+"""Bulk directory comparison for simple-grid and along-track NetCDF files."""
 
 from __future__ import annotations
 
@@ -7,9 +7,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from validation.comparators.along_track_hilat import (
+    AlongTrackHilatComparator,
+    pool_lat_bands,
+)
 from validation.comparators.simple_grid import SimpleGridComparator
 
 log = logging.getLogger(__name__)
+
+BULK_COMPARATORS = {
+    "simple_grid": SimpleGridComparator,
+    "along_track_hilat": AlongTrackHilatComparator,
+}
 
 
 @dataclass
@@ -24,9 +33,24 @@ class FilePairResult:
     ssha_mean_abs_diff: float | None = None
     ssha_rmsd: float | None = None
     ssha_bias: float | None = None
+    ssha_pearson_r: float | None = None
     counts_max_abs_diff: float | None = None
     counts_mean_abs_diff: float | None = None
     counts_rmsd: float | None = None
+    # along_track_hilat only
+    n_common_cells: int | None = None
+    cells_a: int | None = None
+    cells_b: int | None = None
+    max_abs_diff_lat: float | None = None
+    max_abs_diff_lon: float | None = None
+    ssha_std_a: float | None = None
+    ssha_std_b: float | None = None
+    ssha_std_ratio: float | None = None
+    noise_a: float | None = None
+    noise_b: float | None = None
+    self_rmsd_a: float | None = None
+    self_rmsd_b: float | None = None
+    lat_bands: list[dict] | None = None  # raw per-band sums; see pool_lat_bands
     error: str | None = None
 
 
@@ -37,9 +61,12 @@ class BulkComparisonReport:
     dir_a: Path
     dir_b: Path
     threshold: float
+    product_type: str = "simple_grid"
     matched_pairs: list[FilePairResult] = field(default_factory=list)
     only_in_a: list[str] = field(default_factory=list)
     only_in_b: list[str] = field(default_factory=list)
+    # along_track_hilat only: per-band sums pooled across all matched pairs
+    lat_bands: list[dict] | None = None
 
 
 def _extract_date(filename: str) -> str | None:
@@ -68,13 +95,19 @@ def _match_files(
     def _keyed(directory: Path) -> tuple[dict[str, Path], list[str]]:
         dated: dict[str, Path] = {}
         no_date: list[str] = []
-        for f in directory.glob("*.nc"):
+        for f in sorted(directory.glob("*.nc")):
             date = _extract_date(f.name)
-            if date is not None:
-                dated[date] = f
-            else:
+            if date is None:
                 log.warning("No 8-digit date found in filename, skipping: %s", f.name)
                 no_date.append(f.name)
+            elif date in dated:
+                log.warning(
+                    "Multiple files for date %s in %s; using %s, ignoring %s",
+                    date, directory, dated[date].name, f.name,
+                )
+                no_date.append(f.name)
+            else:
+                dated[date] = f
         return dated, no_date
 
     dated_a, no_date_a = _keyed(dir_a)
@@ -103,15 +136,48 @@ def _compare_pair(
     date_key: str,
     threshold: float,
     ignore_attrs: list[str] | None,
+    product_type: str = "simple_grid",
 ) -> FilePairResult:
-    """Compare a single file pair using SimpleGridComparator."""
+    """Compare a single file pair using the comparator for *product_type*."""
     print(date_key)
     log.debug("Comparing %s vs %s (date=%s)", file_a.name, file_b.name, date_key)
     result = FilePairResult(date_key=date_key, file_a=file_a, file_b=file_b)
 
     try:
-        comparator = SimpleGridComparator(str(file_a), str(file_b), threshold=threshold)
+        comparator_cls = BULK_COMPARATORS[product_type]
+        comparator = comparator_cls(str(file_a), str(file_b), threshold=threshold)
         report = comparator.run(ignore_attrs=ignore_attrs)
+
+        if product_type == "along_track_hilat":
+            gridded = report.quality_summary["ssha_gridded"]
+            result.ssha_pct_within_threshold = gridded["pct_within_threshold"]
+            result.ssha_max_abs_diff = gridded["max_abs_diff"]
+            result.ssha_mean_abs_diff = gridded["mean_abs_diff"]
+            result.ssha_rmsd = gridded["rmsd"]
+            result.ssha_bias = gridded["bias"]
+            result.ssha_pearson_r = gridded["pearson_r"]
+            result.n_common_cells = gridded["n_common_cells"]
+            result.cells_a = gridded["cells_a"]
+            result.cells_b = gridded["cells_b"]
+            result.max_abs_diff_lat = gridded["max_abs_diff_lat"]
+            result.max_abs_diff_lon = gridded["max_abs_diff_lon"]
+            result.ssha_std_a = gridded["std_a"]
+            result.ssha_std_b = gridded["std_b"]
+            result.ssha_std_ratio = gridded["std_ratio"]
+            q = report.quality_summary
+            result.noise_a = (q["noise"]["a"] or {}).get("rms")
+            result.noise_b = (q["noise"]["b"] or {}).get("rms")
+            result.self_rmsd_a = (q["self_baseline"]["a"] or {}).get("rmsd")
+            result.self_rmsd_b = (q["self_baseline"]["b"] or {}).get("rmsd")
+            result.lat_bands = q["lat_bands"]
+            log.debug(
+                "  %s: SSHA agreement=%.1f%%  rmsd=%.4g  common cells=%d",
+                date_key,
+                result.ssha_pct_within_threshold or 0.0,
+                result.ssha_rmsd or 0.0,
+                result.n_common_cells,
+            )
+            return result
 
         ssha_agreement = report.quality_summary.get("ssha_agreement", {})
         result.ssha_pct_within_threshold = ssha_agreement.get("pct_within_threshold")
@@ -124,6 +190,7 @@ def _compare_pair(
                 result.ssha_mean_abs_diff = vc.diff.get("mean_abs_diff")
                 result.ssha_rmsd = vc.diff.get("rmsd")
                 result.ssha_bias = vc.diff.get("bias")
+                result.ssha_pearson_r = vc.diff.get("pearson_r")
             elif vc.name == "counts":
                 result.counts_max_abs_diff = vc.diff.get("max_abs_diff")
                 result.counts_mean_abs_diff = vc.diff.get("mean_abs_diff")
@@ -148,17 +215,22 @@ def run_bulk_comparison(
     dir_b: str | Path,
     threshold: float = 0.05,
     ignore_attrs: list[str] | None = None,
+    product_type: str = "simple_grid",
 ) -> BulkComparisonReport:
     """Compare all matching NetCDF files between two directories.
 
     Parameters
     ----------
     dir_a, dir_b:
-        Paths to directories containing simple-grid NetCDF files.
+        Paths to directories of NetCDF files, matched by filename date. For
+        ``along_track_hilat``, dir_a holds reference-mission along-track files
+        and dir_b holds high-latitude along-track files.
     threshold:
         Absolute difference threshold in metres for the SSHA agreement metric.
     ignore_attrs:
         Global/variable attribute names to ignore during comparison.
+    product_type:
+        Key into BULK_COMPARATORS selecting the comparator to use.
 
     Returns
     -------
@@ -167,10 +239,16 @@ def run_bulk_comparison(
     dir_a = Path(dir_a)
     dir_b = Path(dir_b)
 
-    log.info("Starting bulk comparison: %s vs %s (threshold=%.3f m)", dir_a, dir_b, threshold)
+    log.info(
+        "Starting %s bulk comparison: %s vs %s (threshold=%.3f m)",
+        product_type, dir_a, dir_b, threshold,
+    )
 
     pairs, only_a, only_b = _match_files(dir_a, dir_b)
-    matched_pairs = [_compare_pair(fa, fb, dk, threshold, ignore_attrs) for fa, fb, dk in pairs]
+    matched_pairs = [
+        _compare_pair(fa, fb, dk, threshold, ignore_attrs, product_type)
+        for fa, fb, dk in pairs
+    ]
 
     n_errors = sum(1 for r in matched_pairs if r.error)
     log.info(
@@ -178,10 +256,16 @@ def run_bulk_comparison(
         len(matched_pairs), n_errors,
     )
 
+    lat_bands = None
+    if product_type == "along_track_hilat":
+        lat_bands = pool_lat_bands([r.lat_bands for r in matched_pairs if r.lat_bands])
+
     return BulkComparisonReport(
+        lat_bands=lat_bands,
         dir_a=dir_a,
         dir_b=dir_b,
         threshold=threshold,
+        product_type=product_type,
         matched_pairs=matched_pairs,
         only_in_a=only_a,
         only_in_b=only_b,

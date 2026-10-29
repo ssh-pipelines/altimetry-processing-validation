@@ -5,6 +5,7 @@ Comparison toolkit for altimetry NetCDF product files. Supports single-file pair
 ## Supported Product Types
 
 - **along_track** — Level 2, 1D time-indexed daily files
+- **along_track_hilat** — reference-mission along-track file (A) vs a high-latitude along-track file (B). The files share a layout but sample different orbits, so SSHA is compared on a lat/lon grid rather than point-by-point
 - **simple_grid** — Level 3, 2D lat/lon gridded products
 
 ## Installation
@@ -31,6 +32,9 @@ python -m validation.cli file_a.nc file_b.nc -t along_track
 # Compare two along-track files
 validate-altimetry file_a.nc file_b.nc -t along_track
 
+# Compare a reference along-track file with a high-latitude one
+validate-altimetry NASA-SSH_alt_ref_at_v1_1_20201023.nc NASA-SSH_S3B_alt_hilat_at_v1_1_20201023.nc -t along_track_hilat
+
 # Compare two simple grids
 validate-altimetry file_a.nc file_b.nc -t simple_grid
 
@@ -47,13 +51,13 @@ Exit code 0 means files match; exit code 1 means differences were found.
 
 | Flag | Default | Description |
 |---|---|---|
-| `-t`, `--product-type` | *(required)* | `along_track` or `simple_grid` |
+| `-t`, `--product-type` | *(required)* | `along_track`, `along_track_hilat`, or `simple_grid` |
 | `--ignore-attrs` | none | Global or variable attribute names to exclude from comparison |
-| `--threshold` | `0.05` | Absolute difference threshold in metres for the `pct_within_threshold` metric (simple_grid only) |
+| `--threshold` | `0.05` | Absolute difference threshold in metres for the `pct_within_threshold` metric (simple_grid and along_track_hilat) |
 
 ### Bulk directory comparison
 
-Compare all matching simple-grid NetCDF files across two directories and produce an aggregate report:
+Compare all matching NetCDF files across two directories and produce an aggregate report. Defaults to simple grids. Use `-t along_track_hilat` to compare a directory of reference along-track files (A) against a directory of high-latitude along-track files (B):
 
 ```bash
 bulk-validate-altimetry dir_a/ dir_b/
@@ -66,14 +70,18 @@ bulk-validate-altimetry dir_a/ dir_b/ --ignore-attrs date_created history
 
 # Save a timeseries plot of difference metrics
 bulk-validate-altimetry dir_a/ dir_b/ --plot report.png
+
+# Reference along-track vs high-latitude along-track
+bulk-validate-altimetry ref_at/ hilat_at/ -t along_track_hilat
 ```
 
-Files are matched by filename. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored.
+Files are matched by the 8-digit date before `.nc`, so differing filename patterns (e.g. `NASA-SSH_alt_ref_at_v1_1_20201023.nc` and `NASA-SSH_S3B_alt_hilat_at_v1_1_20201023.nc`) pair up. If a directory holds more than one file for a date, the first one in sorted order is used and the rest are listed as unmatched. Unmatched files are listed but not compared. Exit code 0 means all matched files pass; exit code 1 means at least one file failed or errored.
 
 #### Options
 
 | Flag | Default | Description |
 |---|---|---|
+| `-t`, `--product-type` | `simple_grid` | `simple_grid` or `along_track_hilat` |
 | `--threshold` | `0.05` | Absolute difference threshold in metres for the SSHA agreement metric |
 | `--pass-threshold` | `95.0` | Minimum SSHA agreement % for a file to be marked PASS |
 | `--ignore-attrs` | none | Attribute names to exclude from comparison |
@@ -87,14 +95,22 @@ Files are matched by filename. Unmatched files are listed but not compared. Exit
 - **Aggregate statistics** — mean, median, min, max across all valid pairs for each metric
 - **Summary line** — count and percentage of files passing the SSHA agreement threshold
 
+For `along_track_hilat` the report is organised around alignment questions instead:
+
+- **Per-file table** — bias, RMSD, r, std ratio B/A, self-baseline RMSD for A and B, noise RMS for A and B, grid cells in A / B / both, max abs diff and the lat/lon of that cell, and status
+- **Aggregate statistics** — mean/median/min/max of each per-day metric, plus a list of days with no common cells showing which file was empty
+- **Latitude bands** — bias, RMSD, std A/B and their ratio, and noise A/B per 10° band, pooled over every day. Bands beyond the reference coverage show only high-lat noise
+
 #### Timeseries plot (`--plot`)
 
 A three-panel figure with a shared date x-axis:
 1. **SSHA agreement %** — with a dashed reference line at `--pass-threshold`
 2. **SSHA diff metrics** — MAE, RMSD, and max absolute difference
-3. **Counts MAE**
+3. **Counts MAE** (or **common grid cells** for `along_track_hilat`)
 
 Error pairs (files that could not be read) are marked with vertical red lines on all panels. Supports any format accepted by matplotlib (`.png`, `.pdf`, `.svg`, etc.).
+
+For `along_track_hilat` the figure has two columns. Left, timeseries: bias; RMSD alongside both self-baselines; r and std ratio B/A; noise RMS for A and B; grid cells in A, B, and both. Days with an error or no common cells get red lines. Right, pooled by latitude band: bias and RMSD; std ratio B/A; noise RMS for A and B.
 
 ## Report Contents
 
@@ -120,6 +136,15 @@ The report has four sections:
 - Flag distributions (`good`/`bad`/`total`) for `nasa_flag`, `source_flag`, `median_filter_flag`
 - SSHA percentile distributions (p5/p25/p50/p75/p95) for each file
 
+*along_track_hilat:*
+- The along_track flag distributions and SSHA percentiles above
+- `latitude_range` — min/max latitude per file
+- `ssha_gridded` — SSHA points with `nasa_flag == 0` are averaged into 1° lat/lon cells for each file. Cells observed by both files are compared: max abs diff (and its cell location), MAE, RMSD, bias (B − A), Pearson r, % of cells within `--threshold`, and the std of each file's gridded SSHA with their ratio B/A
+- `noise` — RMS of `ssha − ssha_smoothed` at flag-good points for each file: small-scale noise, using every point rather than only the overlap
+- `self_baseline` — each file's ascending passes vs its own descending passes, on the same grid. This approximates the RMSD that comes purely from gridding different tracks at different times. A vs B RMSD close to these values means the high-lat data adds little disagreement of its own
+- `lat_bands` — per-10°-band bias, RMSD, std A/B, ratio, and noise A/B
+- Per-variable point-by-point diffs are skipped, because the two files' time indices refer to different orbits. Dimension sizes always differ, so the exit code is always 1; judge agreement from `ssha_gridded`
+
 *simple_grid:*
 - `counts` distribution (min, max, mean, zero-count) per file
 - `ssha_coverage` — number and percentage of valid (non-NaN) cells per file
@@ -132,6 +157,8 @@ The report has four sections:
 | DEV vs PROD (same processing) | ≈ 0 | ≈ 1.0 | 0.05 m (default) |
 | New product vs NASA-SSH, post-offset | Small | High | 0.05 m |
 | New product vs NASA-SSH, pre-offset | Known offset | High | 0.10 m or wider |
+
+For `along_track_hilat`, compare A vs B RMSD with the self-baselines rather than with a fixed threshold. A std ratio B/A near 1 means similar variability; a noise B well above noise A means the high-lat data is noisier at small scales.
 
 A high `r` with a nonzero bias typically means the spatial patterns agree but a systematic offset exists — expected when comparing products before a global offset has been applied.
 
@@ -159,9 +186,11 @@ src/validation/
   comparators/
     base.py               # BaseComparator ABC + result dataclasses
     along_track.py        # AlongTrackComparator
+    along_track_hilat.py  # AlongTrackHilatComparator (ref vs high-lat, gridded)
     simple_grid.py        # SimpleGridComparator
   analysis/
     statistics.py         # Per-variable stats and diff computation
     attributes.py         # Global & variable attribute diffing
     dimensions.py         # Dimension comparison
+    binning.py            # Along-track → lat/lon grid binning
 ```
